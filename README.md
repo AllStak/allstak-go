@@ -37,6 +37,30 @@ Once integrated, every event flows to your AllStak dashboard:
 - **Cron monitors** — scheduled job success/failure tracking
 - **Alerts** — email and webhook notifications on regressions
 
+## ⚠️ Module Path Migration Notice
+
+> **Previous module path:** `github.com/allstak-io/allstak-go`
+> **Current canonical path:** `github.com/AllStak/allstak-go`
+
+If you were using the old module path, update your code:
+
+**1. Update `go.mod`:**
+```bash
+go get github.com/AllStak/allstak-go@latest
+```
+
+**2. Update all import paths:**
+```bash
+# Find all files using the old path
+grep -r "allstak-io/allstak-go" .
+
+# Replace globally (Linux/macOS)
+find . -name "*.go" | xargs sed -i 's|github.com/allstak-io/allstak-go|github.com/AllStak/allstak-go|g'
+```
+
+**3. Run `go mod tidy`** to clean up your `go.sum`.
+
+The old repository at `github.com/allstak-io/allstak-go` is archived and read-only.
 ## Installation
 
 ```bash
