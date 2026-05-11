@@ -2,8 +2,8 @@
 
 **Structured error + log capture for Go services. Zero-allocation hot path, context-aware.**
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/allstak-io/allstak-go.svg)](https://pkg.go.dev/github.com/allstak-io/allstak-go)
-[![CI](https://github.com/allstak-io/allstak-go/actions/workflows/ci.yml/badge.svg)](https://github.com/allstak-io/allstak-go/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/AllStak/allstak-go.svg)](https://pkg.go.dev/github.com/AllStak/allstak-go)
+[![CI](https://github.com/AllStak/allstak-go/actions/workflows/ci.yml/badge.svg)](https://github.com/AllStak/allstak-go/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Official AllStak SDK for Go — captures errors, structured logs, inbound/outbound HTTP, SQL queries, distributed spans, and cron heartbeats.
@@ -40,7 +40,7 @@ Once integrated, every event flows to your AllStak dashboard:
 ## Installation
 
 ```bash
-go get github.com/allstak-io/allstak-go
+go get github.com/AllStak/allstak-go
 ```
 
 ## Quick Start
@@ -55,7 +55,7 @@ import (
     "errors"
     "os"
 
-    "github.com/allstak-io/allstak-go"
+    "github.com/AllStak/allstak-go"
 )
 
 func main() {
@@ -139,7 +139,7 @@ export ALLSTAK_HOST=https://allstak.mycorp.com
 
 - Documentation: https://docs.allstak.sa
 - Dashboard: https://app.allstak.sa
-- Source: https://github.com/allstak-io/allstak-go
+- Source: https://github.com/AllStak/allstak-go
 
 ## License
 
