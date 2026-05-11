@@ -17,7 +17,7 @@ import (
 	"net/http"
 	"time"
 
-	allstak "github.com/allstak-io/allstak-go"
+	allstak "github.com/AllStak/allstak-go"
 	"github.com/gin-gonic/gin"
 )
 

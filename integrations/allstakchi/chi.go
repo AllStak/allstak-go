@@ -2,14 +2,14 @@
 //
 // Chi uses stdlib http.Handler throughout, so this is a trivial wrapper
 // around the base allstak.Middleware. It exists as its own package so
-// customers can `import _ "github.com/allstak-io/allstak-go/integrations/allstakchi"`
+// customers can `import _ "github.com/AllStak/allstak-go/integrations/allstakchi"`
 // without forcing everyone else to know about Chi.
 package allstakchi
 
 import (
 	"net/http"
 
-	allstak "github.com/allstak-io/allstak-go"
+	allstak "github.com/AllStak/allstak-go"
 )
 
 // Middleware returns a Chi-compatible middleware that captures inbound

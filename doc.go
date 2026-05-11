@@ -19,11 +19,11 @@
 //
 //   - [Middleware] — net/http and Chi inbound HTTP capture.
 //   - [NewTransport] — outbound http.Client capture.
-//   - Nested module github.com/allstak-io/allstak-go/integrations/allstakgorm
+//   - Nested module github.com/AllStak/allstak-go/integrations/allstakgorm
 //     for GORM database instrumentation.
-//   - Nested module github.com/allstak-io/allstak-go/integrations/allstakgin
+//   - Nested module github.com/AllStak/allstak-go/integrations/allstakgin
 //     for Gin middleware.
-//   - Package github.com/allstak-io/allstak-go/integrations/allstakcron for
+//   - Package github.com/AllStak/allstak-go/integrations/allstakcron for
 //     robfig/cron-compatible job wrappers.
 //
 // # Thread safety

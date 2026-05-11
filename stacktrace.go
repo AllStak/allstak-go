@@ -49,7 +49,7 @@ func isSDKFrame(fn string) bool {
 	if fn == "" {
 		return false
 	}
-	return strings.HasPrefix(fn, "github.com/allstak-io/allstak-go")
+	return strings.HasPrefix(fn, "github.com/AllStak/allstak-go")
 }
 
 // formatFrame turns a runtime.Frame into "<file>:<line> <function>".
