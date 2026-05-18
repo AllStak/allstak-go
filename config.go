@@ -82,13 +82,32 @@ type Config struct {
 	// Defaulted from the package constants below; override only for tests.
 	SDKName    string
 	SDKVersion string
+
+	// RedactKeys are extra key patterns added to the built-in deny-list.
+	// Each entry is either a plain substring (matched case-insensitively)
+	// or a Go regexp prefixed with "(?" or "^". The built-in deny-list
+	// (authorization, cookie, x-api-key, *token, *api_key, *password,
+	// *secret, etc.) is always applied — RedactKeys extends it but never
+	// shrinks it.
+	RedactKeys []string
+
+	// CaptureRequestHeaders enables capture of inbound request headers
+	// into HTTPRequestItem.RequestHeaders. **Off by default.** When on,
+	// sensitive header values are replaced with "[REDACTED]" before
+	// leaving the process — see the default deny-list in redaction.go.
+	CaptureRequestHeaders bool
+
+	// CaptureResponseHeaders enables capture of inbound response headers
+	// into HTTPRequestItem.ResponseHeaders. **Off by default.** Same
+	// redaction guarantees as CaptureRequestHeaders.
+	CaptureResponseHeaders bool
 }
 
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.
-const (
-	SDKName    = "allstak-go"
-	SDKVersion = "1.2.0"
-)
+// SDKVersion is derived from the single source of truth: sdkVersion in client.go.
+const SDKName = "allstak-go"
+
+var SDKVersion = sdkVersion
 
 // envFirstNonEmpty returns the first non-empty value of the listed env vars,
 // or "". Used for release-metadata auto-detection.

@@ -1,0 +1,8 @@
+.DS_Store
+.env
+.env.*
+*.test
+coverage.out
+bin/
+dist/
+validation-report.json

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 )
 
 // Context keys. Using a private type prevents key collisions with any
@@ -246,4 +247,42 @@ func NewSpanID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+func parseTraceParent(header string) (traceID string, parentSpanID string) {
+	parts := strings.Split(header, "-")
+	if len(parts) < 4 {
+		return "", ""
+	}
+	if len(parts[1]) == 32 {
+		traceID = strings.ToLower(parts[1])
+	}
+	if len(parts[2]) == 16 {
+		parentSpanID = strings.ToLower(parts[2])
+	}
+	return traceID, parentSpanID
+}
+
+// ParseTraceParentForIntegration is exposed for framework integrations that
+// live in nested modules and cannot access the root package's private helper.
+func ParseTraceParentForIntegration(header string) (traceID string, parentSpanID string) {
+	return parseTraceParent(header)
+}
+
+func traceParentHeader(traceID, spanID string) string {
+	tid := traceID
+	if len(tid) != 32 {
+		tid = NewTraceID()
+	}
+	sid := spanID
+	if len(sid) != 16 {
+		sid = NewSpanID()
+	}
+	return "00-" + tid + "-" + sid + "-01"
+}
+
+// TraceParentForIntegration is exposed for framework integrations that live in
+// nested modules and need to propagate the current AllStak trace context.
+func TraceParentForIntegration(traceID, spanID string) string {
+	return traceParentHeader(traceID, spanID)
 }

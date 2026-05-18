@@ -1,9 +1,9 @@
-module github.com/allstak/allstak-go/integrations/allstakgorm
+module github.com/allstak-io/allstak-go/integrations/allstakgorm
 
 go 1.23.4
 
 require (
-	github.com/allstak/allstak-go v0.0.0
+	github.com/allstak-io/allstak-go v0.0.0
 	gorm.io/gorm v1.25.12
 )
 
@@ -13,4 +13,4 @@ require (
 	golang.org/x/text v0.14.0 // indirect
 )
 
-replace github.com/allstak/allstak-go => ../..
+replace github.com/allstak-io/allstak-go => ../..

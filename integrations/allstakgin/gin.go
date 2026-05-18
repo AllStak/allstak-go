@@ -3,7 +3,7 @@
 // Gin uses its own Context type rather than stdlib http.Handler, so this
 // package mirrors the behavior of allstak.Middleware in Gin's native API:
 //
-//   - generate or reuse an incoming X-AllStak-Trace-Id header
+//   - generate or reuse incoming traceparent / X-AllStak trace headers
 //   - attach SpanContext + RequestInfo to the request context
 //   - recover panics and capture them as fatal errors
 //   - emit an inbound HTTPRequestItem when the request finishes
@@ -30,15 +30,25 @@ import (
 func Middleware(client *allstak.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
-		traceID := c.GetHeader("X-AllStak-Trace-Id")
+		traceID, traceParentSpan := allstak.ParseTraceParentForIntegration(c.GetHeader("traceparent"))
+		if traceID == "" {
+			traceID = c.GetHeader("X-AllStak-Trace-Id")
+		}
 		if traceID == "" {
 			traceID = allstak.NewTraceID()
 		}
+		requestID := c.GetHeader("X-AllStak-Request-Id")
+		if requestID == "" {
+			requestID = traceID
+		}
 		parentSpan := c.GetHeader("X-AllStak-Span-Id")
+		if parentSpan == "" {
+			parentSpan = traceParentSpan
+		}
 		spanID := allstak.NewSpanID()
 
 		ctx := allstak.WithRequestState(c.Request.Context())
-		ctx = allstak.WithRequestID(ctx, traceID)
+		ctx = allstak.WithRequestID(ctx, requestID)
 		ctx = allstak.WithContextSpan(ctx, traceID, spanID, parentSpan)
 		ctx = allstak.WithRequestInfo(ctx, &allstak.RequestInfo{
 			Method:    c.Request.Method,
@@ -48,6 +58,8 @@ func Middleware(client *allstak.Client) gin.HandlerFunc {
 		})
 		c.Request = c.Request.WithContext(ctx)
 		c.Writer.Header().Set("X-AllStak-Trace-Id", traceID)
+		c.Writer.Header().Set("X-AllStak-Request-Id", requestID)
+		c.Writer.Header().Set("traceparent", allstak.TraceParentForIntegration(traceID, spanID))
 
 		// Panic recovery: capture as fatal, ensure a 500 is sent if
 		// nothing has been written yet, and always record the inbound
@@ -93,6 +105,9 @@ func captureInbound(client *allstak.Client, c *gin.Context, start time.Time) {
 	if tid, sid := allstak.TraceFromContext(c.Request.Context()); tid != "" {
 		item.TraceID = tid
 		item.SpanID = sid
+	}
+	if rid := allstak.RequestIDFromContext(c.Request.Context()); rid != "" {
+		item.Metadata = map[string]any{"requestId": rid}
 	}
 	if u := allstak.UserFromContext(c.Request.Context()); u != nil {
 		item.UserID = u.ID

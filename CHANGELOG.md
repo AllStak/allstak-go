@@ -4,6 +4,28 @@ All notable changes to the AllStak Go SDK are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-05-17
+
+Runtime hardening and privacy pass. Still **beta** — pending live dashboard certification.
+
+### Added
+- Header- and metadata-redaction layer. Default deny-list covers `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-API-Key`, `X-Auth-Token`, `X-Access-Token`, `X-AllStak-Key`, and key-suffix patterns `*token`, `*api_key`, `*password`, `*passwd`, `*secret`, `*session_id`, `*csrf`. Applied to:
+  - `Config.RedactKeys` extends (never shrinks) the deny-list. Accepts plain substrings or full regexps.
+  - `CaptureError.Metadata` and breadcrumb `Data` (recursive into nested maps and slices).
+  - `CaptureLog.Metadata` (recursive).
+  - `CaptureHTTPRequest.Metadata` (recursive).
+  - `CaptureSpan.Tags` (`map[string]string`).
+- Optional inbound/outbound header capture: `Config.CaptureRequestHeaders` and `Config.CaptureResponseHeaders` (both **off by default**). When enabled, sensitive header values are written as `[REDACTED]` in `HTTPRequestItem.RequestHeaders` / `.ResponseHeaders`. Bodies remain off and uncaptured.
+- Integration tests: `integrations/allstakchi` (3 tests covering inbound capture, panic recovery, header redaction) and `integrations/allstakcron` (5 tests covering success, error, panic-safety, `Wrap` shape, nil-safe init).
+- Redaction unit tests covering the default deny-list, custom string/regex patterns, invalid pattern fallthrough, nested-map walks, multi-value header redaction, and capture-path assertions for error/log/request/span metadata.
+
+### Changed
+- `sdkVersion` constant bumped to `0.1.2`. Aligned with this CHANGELOG entry and the User-Agent stamp (`allstak-go/0.1.2`).
+
+### Notes
+- Published latest at the time of release was `v0.1.1` (no CHANGELOG entry). This `v0.1.2` line is the first release that closes the documented version-drift.
+- Live dashboard certification has not yet been recorded; this release does not claim production-stable status.
+
 ## [0.1.0] — 2026-04-11
 
 Initial public release of the Go SDK. v0.1.0 is considered **stable for

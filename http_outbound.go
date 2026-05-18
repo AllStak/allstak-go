@@ -51,9 +51,23 @@ func (t *outboundTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	// running the SDK. We use the same header names as OpenTelemetry's
 	// W3C traceparent for forward compatibility.
 	if sc := SpanFromContext(req.Context()); sc != nil && sc.TraceID != "" {
-		req.Header.Set("X-AllStak-Trace-Id", sc.TraceID)
+		if req.Header.Get("traceparent") == "" {
+			req.Header.Set("traceparent", traceParentHeader(sc.TraceID, sc.SpanID))
+		}
+		if req.Header.Get("X-AllStak-Trace-Id") == "" {
+			req.Header.Set("X-AllStak-Trace-Id", sc.TraceID)
+		}
+		requestID := RequestIDFromContext(req.Context())
+		if requestID == "" {
+			requestID = sc.TraceID
+		}
+		if req.Header.Get("X-AllStak-Request-Id") == "" {
+			req.Header.Set("X-AllStak-Request-Id", requestID)
+		}
 		if sc.SpanID != "" {
-			req.Header.Set("X-AllStak-Span-Id", sc.SpanID)
+			if req.Header.Get("X-AllStak-Span-Id") == "" {
+				req.Header.Set("X-AllStak-Span-Id", sc.SpanID)
+			}
 		}
 	}
 
@@ -75,6 +89,9 @@ func (t *outboundTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		item.SpanID = sc.SpanID
 		item.ParentSpanID = sc.ParentSpanID
 	}
+	if rid := RequestIDFromContext(req.Context()); rid != "" {
+		item.Metadata = map[string]any{"requestId": rid}
+	}
 	if u := UserFromContext(req.Context()); u != nil {
 		item.UserID = u.ID
 	}
@@ -90,6 +107,13 @@ func (t *outboundTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		if resp.ContentLength > 0 {
 			item.ResponseSize = int(resp.ContentLength)
 		}
+	}
+
+	if t.client.cfg.CaptureRequestHeaders {
+		item.RequestHeaders = t.client.activeRedactor().RedactHeaders(req.Header)
+	}
+	if t.client.cfg.CaptureResponseHeaders && resp != nil {
+		item.ResponseHeaders = t.client.activeRedactor().RedactHeaders(resp.Header)
 	}
 
 	t.client.CaptureHTTPRequest(item)

@@ -33,11 +33,21 @@ func Middleware(client *Client) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			traceID := r.Header.Get("X-AllStak-Trace-Id")
+			traceID, traceParentSpan := parseTraceParent(r.Header.Get("traceparent"))
+			if traceID == "" {
+				traceID = r.Header.Get("X-AllStak-Trace-Id")
+			}
 			if traceID == "" {
 				traceID = NewTraceID()
 			}
+			requestID := r.Header.Get("X-AllStak-Request-Id")
+			if requestID == "" {
+				requestID = traceID
+			}
 			parentSpan := r.Header.Get("X-AllStak-Span-Id")
+			if parentSpan == "" {
+				parentSpan = traceParentSpan
+			}
 			spanID := NewSpanID()
 
 			// Install a mutable request-state bag FIRST. Downstream
@@ -46,7 +56,7 @@ func Middleware(client *Client) func(http.Handler) http.Handler {
 			// handler below will still see it because the bag is a
 			// pointer shared across the whole request.
 			ctx := withRequestState(r.Context(), newRequestState())
-			ctx = WithRequestID(ctx, traceID) // trace ID doubles as request ID
+			ctx = WithRequestID(ctx, requestID)
 			ctx = withSpan(ctx, &SpanContext{
 				TraceID:      traceID,
 				SpanID:       spanID,
@@ -62,6 +72,8 @@ func Middleware(client *Client) func(http.Handler) http.Handler {
 			// Propagate the trace ID back so the client/browser can
 			// correlate its own logs.
 			w.Header().Set("X-AllStak-Trace-Id", traceID)
+			w.Header().Set("X-AllStak-Request-Id", requestID)
+			w.Header().Set("traceparent", traceParentHeader(traceID, spanID))
 
 			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
@@ -106,8 +118,17 @@ func (c *Client) captureInbound(ctx context.Context, r *http.Request, rw *status
 		item.SpanID = sc.SpanID
 		item.ParentSpanID = sc.ParentSpanID
 	}
+	if rid := RequestIDFromContext(ctx); rid != "" {
+		item.Metadata = map[string]any{"requestId": rid}
+	}
 	if u := UserFromContext(ctx); u != nil {
 		item.UserID = u.ID
+	}
+	if c.cfg.CaptureRequestHeaders {
+		item.RequestHeaders = c.activeRedactor().RedactHeaders(r.Header)
+	}
+	if c.cfg.CaptureResponseHeaders {
+		item.ResponseHeaders = c.activeRedactor().RedactHeaders(rw.Header())
 	}
 	c.CaptureHTTPRequest(item)
 }

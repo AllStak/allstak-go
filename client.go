@@ -12,7 +12,7 @@ import (
 
 // sdkVersion is stamped into the User-Agent header and into the Environment
 // DSN for debugging. Keep in sync with CHANGELOG.md.
-const sdkVersion = "0.1.0"
+const sdkVersion = "0.1.2"
 
 // Client is the central entry point for the SDK. It owns a background worker
 // goroutine per ingest stream (errors, logs, requests, db, spans) that
@@ -25,6 +25,7 @@ type Client struct {
 	cfg       Config
 	transport ingestTransport
 	host      string
+	redactor  *Redactor
 
 	// One queue + one worker per stream keeps head-of-line blocking from
 	// one signal type (e.g. a chatty DB) from starving another (e.g. rare
@@ -92,6 +93,7 @@ func newWithTransport(cfg Config, host string, transport ingestTransport) *Clien
 		cfg:       cfg,
 		transport: transport,
 		host:      host,
+		redactor:  NewRedactor(cfg.RedactKeys),
 		errs:      make(chan *ErrorPayload, cfg.QueueCapacity),
 		logs:      make(chan *LogPayload, cfg.QueueCapacity),
 		requests:  make(chan *HTTPRequestItem, cfg.QueueCapacity),
@@ -213,6 +215,12 @@ func (c *Client) CaptureError(p ErrorPayload) {
 	// Merge release-tracking tags (sdk.name/version, platform, dist,
 	// commit.sha/branch) into Metadata. Caller-supplied metadata wins.
 	p.Metadata = mergeReleaseTags(p.Metadata, c.cfg.ReleaseTags())
+	// Redact sensitive keys in caller-supplied metadata and breadcrumbs.
+	r := c.activeRedactor()
+	p.Metadata = r.RedactMetadata(p.Metadata)
+	for i := range p.Breadcrumbs {
+		p.Breadcrumbs[i].Data = r.RedactMetadata(p.Breadcrumbs[i].Data)
+	}
 
 	select {
 	case c.errs <- &p:
@@ -243,6 +251,7 @@ func (c *Client) CaptureLog(p LogPayload) {
 		p.Service = c.cfg.ServiceName
 	}
 	p.Metadata = mergeReleaseTags(p.Metadata, c.cfg.ReleaseTags())
+	p.Metadata = c.activeRedactor().RedactMetadata(p.Metadata)
 
 	select {
 	case c.logs <- &p:
@@ -275,6 +284,7 @@ func (c *Client) CaptureHTTPRequest(p HTTPRequestItem) {
 		p.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	p.Metadata = mergeReleaseTags(p.Metadata, c.cfg.ReleaseTags())
+	p.Metadata = c.activeRedactor().RedactMetadata(p.Metadata)
 
 	select {
 	case c.requests <- &p:
@@ -334,6 +344,7 @@ func (c *Client) CaptureSpan(p SpanItem) {
 	if p.Service == "" {
 		p.Service = c.cfg.ServiceName
 	}
+	p.Tags = c.activeRedactor().RedactStringMap(p.Tags)
 
 	select {
 	case c.spans <- &p:
@@ -362,7 +373,9 @@ func (c *Client) SendHeartbeat(ctx context.Context, p HeartbeatPayload) error {
 	if p.Status == "" {
 		p.Status = "success"
 	}
-	return c.transport.send(ctx, pathHeartbeat, p)
+	boundedCtx, cancel := c.withOperationDeadline(ctx)
+	defer cancel()
+	return c.transport.send(boundedCtx, pathHeartbeat, p)
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -397,6 +410,23 @@ func (c *Client) Flush(ctx context.Context) error {
 	}
 }
 
+func (c *Client) withOperationDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	limit := c.cfg.RequestTimeout * 2
+	if limit <= 0 {
+		limit = 10 * time.Second
+	}
+	if limit > 10*time.Second {
+		limit = 10 * time.Second
+	}
+	return context.WithTimeout(ctx, limit)
+}
+
 // Close flushes any buffered events and stops the background workers.
 // It is idempotent — calling Close twice is a no-op.
 func (c *Client) Close(ctx context.Context) error {
@@ -427,4 +457,3 @@ func (c *Client) debugf(format string, args ...any) {
 	}
 	fmt.Fprintf(stderrWriter, "[allstak] "+format+"\n", args...)
 }
-
