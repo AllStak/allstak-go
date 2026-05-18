@@ -34,6 +34,14 @@ var defaultRedactKeyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(^|[._-])secret$`),
 	regexp.MustCompile(`(?i)(^|[._-])session[._-]?id$`),
 	regexp.MustCompile(`(?i)(^|[._-])csrf$`),
+	// Added in 0.1.3 for canonical denylist parity across the SDK ecosystem.
+	regexp.MustCompile(`(?i)(^|[._-])bearer$`),
+	regexp.MustCompile(`(?i)(^|[._-])jwt$`),
+	regexp.MustCompile(`(?i)(^|[._-])pwd$`),
+	regexp.MustCompile(`(?i)(^|[._-])credit[._-]?card$`),
+	regexp.MustCompile(`(?i)(^|[._-])card[._-]?number$`),
+	regexp.MustCompile(`(?i)(^|[._-])cvv$`),
+	regexp.MustCompile(`(?i)(^|[._-])ssn$`),
 }
 
 // Redactor decides which keys are sensitive. Zero value is usable and

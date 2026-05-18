@@ -4,6 +4,28 @@ All notable changes to the AllStak Go SDK are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-05-18
+
+### Added — canonical denylist parity
+Extended `defaultRedactKeyPatterns` in `redaction.go` with the seven terms
+that were missing relative to the canonical SDK-platform denylist:
+`bearer`, `jwt`, `pwd`, `credit_card` / `creditcard`, `card_number` /
+`cardnumber`, `cvv`, `ssn`. Recursion behaviour, the `[REDACTED]`
+sentinel, and the `(^|[._-])<term>$` suffix-anchored pattern style are
+unchanged. The denylist now matches the same 25-term canonical baseline
+used by `@allstak/js`, `@allstak/react-native`, `allstak-python`,
+`allstak-ruby`, `AllStak` (.NET), and `allstak_flutter`.
+
+### Live canary E2E
+Real on-the-wire proof against `https://api.allstak.sa`:
+- Event `c465c398-84a5-468f-9f28-efe411964f4c` (sdk.name=`allstak-go`,
+  sdk.version=`0.1.3`, release=`go-canary-10outof10`).
+- ClickHouse confirmed `leak_pos = 0` across `metadata`, `stack_trace`,
+  `breadcrumbs`, `message`. The canary `should_not_leak_go` was planted
+  in `password`, `authorization`, `cookie`, `Bearer`, `api_key`,
+  `token`, `jwt`, `bearer`, `pwd`, `credit_card`, `ssn`, `cvv`, and a
+  3-level-nested `token`. All scrubbed before the wire.
+
 ## [0.1.2] — 2026-05-17
 
 Runtime hardening and privacy pass. Still **beta** — pending live dashboard certification.
