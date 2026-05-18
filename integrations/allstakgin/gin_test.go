@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	allstak "github.com/allstak-io/allstak-go"
-	"github.com/allstak-io/allstak-go/integrations/allstakgin"
+	allstak "github.com/AllStak/allstak-go"
+	"github.com/AllStak/allstak-go/integrations/allstakgin"
 	"github.com/gin-gonic/gin"
 )
 

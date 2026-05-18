@@ -4,6 +4,22 @@ All notable changes to the AllStak Go SDK are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-18
+
+### BREAKING — Module path migration `allstak-io` → `AllStak`
+- The Go module path is now `github.com/AllStak/allstak-go` (was
+  `github.com/allstak-io/allstak-go`). Consumers must update their imports:
+  ```diff
+  - import allstak "github.com/allstak-io/allstak-go"
+  + import allstak "github.com/AllStak/allstak-go"
+  ```
+- The legacy `allstak-io/allstak-go` repo is archived. New tags only land
+  on `AllStak/allstak-go`; the Go proxy cannot resolve new versions under
+  the old path. This is a one-time migration; the API surface is unchanged.
+- All `integrations/allstakgin`, `integrations/allstakgorm`,
+  `integrations/allstakchi`, `integrations/allstakcron` submodules
+  migrated in lockstep.
+
 ## [0.1.3] — 2026-05-18
 
 ### Added — canonical denylist parity

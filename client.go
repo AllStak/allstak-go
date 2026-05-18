@@ -12,7 +12,7 @@ import (
 
 // sdkVersion is stamped into the User-Agent header and into the Environment
 // DSN for debugging. Keep in sync with CHANGELOG.md.
-const sdkVersion = "0.1.3"
+const sdkVersion = "0.2.0"
 
 // Client is the central entry point for the SDK. It owns a background worker
 // goroutine per ingest stream (errors, logs, requests, db, spans) that

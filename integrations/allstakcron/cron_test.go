@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	allstak "github.com/allstak-io/allstak-go"
-	"github.com/allstak-io/allstak-go/integrations/allstakcron"
+	allstak "github.com/AllStak/allstak-go"
+	"github.com/AllStak/allstak-go/integrations/allstakcron"
 )
 
 type recordingTransport struct {

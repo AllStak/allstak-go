@@ -1,3 +1,3 @@
-module github.com/allstak-io/allstak-go
+module github.com/AllStak/allstak-go
 
 go 1.23.4

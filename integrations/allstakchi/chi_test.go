@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	allstak "github.com/allstak-io/allstak-go"
-	"github.com/allstak-io/allstak-go/integrations/allstakchi"
+	allstak "github.com/AllStak/allstak-go"
+	"github.com/AllStak/allstak-go/integrations/allstakchi"
 )
 
 // recordingTransport collects payloads in memory so tests can assert on

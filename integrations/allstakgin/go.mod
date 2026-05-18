@@ -1,9 +1,9 @@
-module github.com/allstak-io/allstak-go/integrations/allstakgin
+module github.com/AllStak/allstak-go/integrations/allstakgin
 
 go 1.23.4
 
 require (
-	github.com/allstak-io/allstak-go v0.0.0
+	github.com/AllStak/allstak-go v0.0.0
 	github.com/gin-gonic/gin v1.10.0
 )
 
@@ -36,4 +36,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/allstak-io/allstak-go => ../..
+replace github.com/AllStak/allstak-go => ../..
