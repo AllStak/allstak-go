@@ -33,11 +33,7 @@ func Middleware(client *Client) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			traceID := r.Header.Get("X-AllStak-Trace-Id")
-			if traceID == "" {
-				traceID = NewTraceID()
-			}
-			parentSpan := r.Header.Get("X-AllStak-Span-Id")
+			headers := TraceHeadersFromRequest(r)
 			spanID := NewSpanID()
 
 			// Install a mutable request-state bag FIRST. Downstream
@@ -46,11 +42,11 @@ func Middleware(client *Client) func(http.Handler) http.Handler {
 			// handler below will still see it because the bag is a
 			// pointer shared across the whole request.
 			ctx := withRequestState(r.Context(), newRequestState())
-			ctx = WithRequestID(ctx, traceID) // trace ID doubles as request ID
+			ctx = WithRequestID(ctx, headers.RequestID)
 			ctx = withSpan(ctx, &SpanContext{
-				TraceID:      traceID,
+				TraceID:      headers.TraceID,
 				SpanID:       spanID,
-				ParentSpanID: parentSpan,
+				ParentSpanID: headers.ParentSpanID,
 			})
 			ctx = WithRequestInfo(ctx, &RequestInfo{
 				Method:    r.Method,
@@ -59,9 +55,8 @@ func Middleware(client *Client) func(http.Handler) http.Handler {
 				UserAgent: r.Header.Get("User-Agent"),
 			})
 
-			// Propagate the trace ID back so the client/browser can
-			// correlate its own logs.
-			w.Header().Set("X-AllStak-Trace-Id", traceID)
+			// Propagate trace context back so clients can correlate telemetry.
+			SetTraceResponseHeaders(w.Header(), headers.TraceID, headers.RequestID, spanID)
 
 			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
@@ -101,6 +96,7 @@ func (c *Client) captureInbound(ctx context.Context, r *http.Request, rw *status
 		ResponseSize: rw.bytes,
 		Timestamp:    start.UTC().Format(time.RFC3339Nano),
 	}
+	item.RequestID = RequestIDFromContext(ctx)
 	if sc != nil {
 		item.TraceID = sc.TraceID
 		item.SpanID = sc.SpanID

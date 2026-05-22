@@ -71,7 +71,7 @@ func (c *Client) CaptureMessage(ctx context.Context, level, message string) {
 
 // unwrapMessage walks the error chain and returns the outermost message.
 // If the chain is empty, returns err.Error() directly. This matches the
-// Sentry/AllStak convention of showing the user-visible message at the top.
+// AllStak convention of showing the user-visible message at the top.
 func unwrapMessage(err error) string {
 	if err == nil {
 		return ""

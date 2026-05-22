@@ -30,16 +30,12 @@ import (
 func Middleware(client *allstak.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
-		traceID := c.GetHeader("X-AllStak-Trace-Id")
-		if traceID == "" {
-			traceID = allstak.NewTraceID()
-		}
-		parentSpan := c.GetHeader("X-AllStak-Span-Id")
+		headers := allstak.TraceHeadersFromRequest(c.Request)
 		spanID := allstak.NewSpanID()
 
 		ctx := allstak.WithRequestState(c.Request.Context())
-		ctx = allstak.WithRequestID(ctx, traceID)
-		ctx = allstak.WithContextSpan(ctx, traceID, spanID, parentSpan)
+		ctx = allstak.WithRequestID(ctx, headers.RequestID)
+		ctx = allstak.WithContextSpan(ctx, headers.TraceID, spanID, headers.ParentSpanID)
 		ctx = allstak.WithRequestInfo(ctx, &allstak.RequestInfo{
 			Method:    c.Request.Method,
 			Path:      c.FullPath(),
@@ -47,7 +43,7 @@ func Middleware(client *allstak.Client) gin.HandlerFunc {
 			UserAgent: c.Request.UserAgent(),
 		})
 		c.Request = c.Request.WithContext(ctx)
-		c.Writer.Header().Set("X-AllStak-Trace-Id", traceID)
+		allstak.SetTraceResponseHeaders(c.Writer.Header(), headers.TraceID, headers.RequestID, spanID)
 
 		// Panic recovery: capture as fatal, ensure a 500 is sent if
 		// nothing has been written yet, and always record the inbound
@@ -90,9 +86,11 @@ func captureInbound(client *allstak.Client, c *gin.Context, start time.Time) {
 		ResponseSize: c.Writer.Size(),
 		Timestamp:    start.UTC().Format(time.RFC3339Nano),
 	}
-	if tid, sid := allstak.TraceFromContext(c.Request.Context()); tid != "" {
-		item.TraceID = tid
-		item.SpanID = sid
+	item.RequestID = allstak.RequestIDFromContext(c.Request.Context())
+	if span := allstak.SpanFromContext(c.Request.Context()); span != nil {
+		item.TraceID = span.TraceID
+		item.SpanID = span.SpanID
+		item.ParentSpanID = span.ParentSpanID
 	}
 	if u := allstak.UserFromContext(c.Request.Context()); u != nil {
 		item.UserID = u.ID

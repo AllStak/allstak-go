@@ -59,7 +59,7 @@ type ReqContext struct {
 	UserAgent  string `json:"userAgent,omitempty"`
 }
 
-// Breadcrumb is a lightweight event leading up to an error. Sentry-style.
+// Breadcrumb is a lightweight event leading up to an error. namespace-compatible.
 type Breadcrumb struct {
 	Timestamp string         `json:"timestamp,omitempty"`
 	Type      string         `json:"type,omitempty"`
@@ -96,6 +96,7 @@ type HTTPRequestBatch struct {
 // HTTPRequestItem is one inbound or outbound HTTP event.
 type HTTPRequestItem struct {
 	TraceID          string `json:"traceId,omitempty"`
+	RequestID        string `json:"requestId,omitempty"`
 	Direction        string `json:"direction"` // "inbound" | "outbound"
 	Method           string `json:"method"`
 	Host             string `json:"host"`

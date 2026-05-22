@@ -51,10 +51,7 @@ func (t *outboundTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	// running the SDK. We use the same header names as OpenTelemetry's
 	// W3C traceparent for forward compatibility.
 	if sc := SpanFromContext(req.Context()); sc != nil && sc.TraceID != "" {
-		req.Header.Set("X-AllStak-Trace-Id", sc.TraceID)
-		if sc.SpanID != "" {
-			req.Header.Set("X-AllStak-Span-Id", sc.SpanID)
-		}
+		SetTraceRequestHeaders(req, sc.TraceID, RequestIDFromContext(req.Context()), sc.SpanID)
 	}
 
 	resp, err := t.inner.RoundTrip(req)
@@ -75,6 +72,7 @@ func (t *outboundTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		item.SpanID = sc.SpanID
 		item.ParentSpanID = sc.ParentSpanID
 	}
+	item.RequestID = RequestIDFromContext(req.Context())
 	if u := UserFromContext(req.Context()); u != nil {
 		item.UserID = u.ID
 	}
