@@ -65,6 +65,18 @@ import allstakgin "github.com/AllStak/allstak-go/integrations/allstakgin"
 router.Use(allstakgin.Middleware(client))
 ```
 
+## Echo
+
+```go
+import allstakecho "github.com/AllStak/allstak-go/integrations/allstakecho"
+
+e.Use(allstakecho.Middleware(client))
+```
+
+The Echo middleware recovers panics as fatal events, captures errors returned
+from handlers, records the inbound request with the matched route template
+(e.g. `/users/:id`), and propagates trace context to downstream/outbound calls.
+
 ## Configuration
 
 | Field | Description |
