@@ -112,6 +112,15 @@ type Config struct {
 	// Defaulted from the package constants below; override only for tests.
 	SDKName    string
 	SDKVersion string
+
+	// AutoDetectRelease gates automatic (CI-free) release detection and the
+	// version fallback. When nil (the default) detection is ON: if Release is
+	// still empty after explicit + env-var resolution, the SDK reads the VCS
+	// revision the Go toolchain stamps at `go build` time, falls back to a
+	// guarded `git describe` when the binary carries no VCS info, and finally
+	// to SDKVersion so Release is never empty. Set to a pointer to false to
+	// opt out and leave Release empty when no explicit/env value was provided.
+	AutoDetectRelease *bool
 }
 
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.
@@ -196,8 +205,21 @@ func (c Config) applyDefaults() Config {
 	if c.SDKVersion == "" {
 		c.SDKVersion = SDKVersion
 	}
+	// Release resolution, highest precedence first:
+	//   1. explicit c.Release (handled by the `== ""` guards — never overwritten)
+	//   2. conventional CI env vars
+	//   3. automatic VCS detection (build info → guarded git describe)
+	//   4. SDKVersion fallback so Release is never empty
+	// Steps 3+4 are gated by AutoDetectRelease (nil/true = on).
 	if c.Release == "" {
 		c.Release = envFirstNonEmpty("ALLSTAK_RELEASE", "VERCEL_GIT_COMMIT_SHA", "RAILWAY_GIT_COMMIT_SHA", "RENDER_GIT_COMMIT")
+	}
+	if c.Release == "" && (c.AutoDetectRelease == nil || *c.AutoDetectRelease) {
+		if rel := resolveAutoRelease(readBuildVCSInfo, defaultGitRunner); rel != "" {
+			c.Release = rel
+		} else {
+			c.Release = c.SDKVersion
+		}
 	}
 	if c.CommitSha == "" {
 		c.CommitSha = envFirstNonEmpty("ALLSTAK_COMMIT_SHA", "GIT_COMMIT", "VERCEL_GIT_COMMIT_SHA", "RAILWAY_GIT_COMMIT_SHA", "RENDER_GIT_COMMIT")
