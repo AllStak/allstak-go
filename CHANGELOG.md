@@ -4,6 +4,35 @@ All notable changes to the AllStak Go SDK are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-13
+
+Module path migration. The published module path moved from `allstak-io` to
+`github.com/AllStak/allstak-go`. The wire format and public API are unchanged
+from 0.1.0; this is a re-home of the canonical import path.
+
+### Changed
+
+- Module path: `allstak-io/...` → `github.com/AllStak/allstak-go`.
+- `sdk.version` and the `User-Agent` header now report `0.2.0`, matching the
+  released tag. (Previously the wire `sdk.version` reported `0.2.0` while the
+  `User-Agent` still reported `0.1.0`; both now derive from a single
+  `SDKVersion` constant.)
+
+### Security
+
+- **Outbound PII / secret scrubbing.** Event metadata, log fields, breadcrumb
+  data, and span tags are now recursively scrubbed against a case-insensitive
+  key denylist (password, token, authorization, cookie, session, jwt, ssn,
+  credit-card, etc.) at the single transport chokepoint before marshalling.
+  Matched values are replaced with `[REDACTED]`. Scrubbing is fail-open and
+  bounded (depth + cycle guards), mirroring the Python/Java SDKs.
+
+### Fixed
+
+- `Retry-After` is now honored on `429` and `503` responses (integer-seconds
+  or HTTP-date), clamped to 300s, falling back to exponential backoff when the
+  header is absent or unparseable.
+
 ## [0.1.0] — 2026-04-11
 
 Initial public release of the Go SDK. v0.1.0 is considered **stable for

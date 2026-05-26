@@ -8,6 +8,8 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -59,6 +61,12 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		return nil
 	}
 
+	// Scrub PII / secrets from user-supplied maps exactly once, here at the
+	// single wire chokepoint, before marshalling. Fail-open: if scrubbing
+	// panics for any reason we fall back to the original payload rather than
+	// dropping the event.
+	payload = scrubPayloadSafe(payload)
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("allstak: marshal payload: %w", err)
@@ -66,6 +74,10 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 
 	url := t.host + path
 	var lastErr error
+	// retryAfter carries a server-directed delay (from a 429/503 Retry-After
+	// header) into the next attempt's wait. Zero means "no server hint — use
+	// exponential backoff".
+	var retryAfter time.Duration
 
 	for attempt := 0; attempt <= t.maxRetries; attempt++ {
 		if ctx.Err() != nil {
@@ -73,14 +85,21 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		}
 
 		if attempt > 0 {
-			// Exponential backoff: 100ms, 200ms, 400ms, ... capped at 5s
-			// with ±25% jitter to avoid thundering herds.
-			base := time.Duration(100*(1<<uint(attempt-1))) * time.Millisecond
-			if base > 5*time.Second {
-				base = 5 * time.Second
+			var sleep time.Duration
+			if retryAfter > 0 {
+				// Honor the server's Retry-After hint, clamped to maxRetryAfter.
+				sleep = retryAfter
+				retryAfter = 0
+			} else {
+				// Exponential backoff: 100ms, 200ms, 400ms, ... capped at 5s
+				// with ±25% jitter to avoid thundering herds.
+				base := time.Duration(100*(1<<uint(attempt-1))) * time.Millisecond
+				if base > 5*time.Second {
+					base = 5 * time.Second
+				}
+				jitter := time.Duration(rand.Int63n(int64(base / 2)))
+				sleep = base - base/4 + jitter
 			}
-			jitter := time.Duration(rand.Int63n(int64(base / 2)))
-			sleep := base - base/4 + jitter
 			select {
 			case <-time.After(sleep):
 			case <-ctx.Done():
@@ -108,6 +127,7 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		// Drain and close the body regardless of outcome so the connection
 		// can be reused by keep-alive.
 		respBody, _ := io.ReadAll(resp.Body)
+		retryAfterHeader := resp.Header.Get("Retry-After")
 		_ = resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -120,6 +140,13 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 			return fmt.Errorf("allstak: ingest %s returned %d: %s", path, resp.StatusCode, truncate(string(respBody), 300))
 		}
 
+		// On 429 (rate limited) and 503 (unavailable) honor a Retry-After
+		// header if the server sent a parseable one; otherwise the next
+		// attempt falls back to exponential backoff.
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			retryAfter = parseRetryAfter(retryAfterHeader, time.Now())
+		}
+
 		lastErr = fmt.Errorf("allstak: ingest %s returned %d", path, resp.StatusCode)
 		if t.debug {
 			fmt.Fprintf(stderrWriter, "[allstak] transport attempt %d got %d: %s\n", attempt+1, resp.StatusCode, truncate(string(respBody), 200))
@@ -130,6 +157,53 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		lastErr = fmt.Errorf("allstak: ingest %s exhausted %d retries", path, t.maxRetries)
 	}
 	return lastErr
+}
+
+// maxRetryAfter clamps any server-directed Retry-After delay. A hostile or
+// misconfigured server could otherwise pin a worker for a very long time.
+const maxRetryAfter = 300 * time.Second
+
+// parseRetryAfter interprets an HTTP Retry-After header value relative to now
+// per RFC 7231 §7.1.3. It accepts either a non-negative integer number of
+// seconds ("120") or an HTTP-date ("Wed, 21 Oct 2015 07:28:00 GMT"), and
+// returns the resulting delay.
+//
+// It returns 0 when the header is empty, unparseable, or resolves to a
+// non-positive delay — the caller treats 0 as "no hint, use backoff". The
+// returned delay is clamped to maxRetryAfter. This function is pure (now is
+// injected) so it is fully unit-testable without sleeping.
+func parseRetryAfter(header string, now time.Time) time.Duration {
+	h := strings.TrimSpace(header)
+	if h == "" {
+		return 0
+	}
+
+	// Integer seconds form.
+	if secs, err := strconv.Atoi(h); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		d := time.Duration(secs) * time.Second
+		if d > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return d
+	}
+
+	// HTTP-date form.
+	if when, err := http.ParseTime(h); err == nil {
+		d := when.Sub(now)
+		if d <= 0 {
+			return 0
+		}
+		if d > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return d
+	}
+
+	// Garbage — fall back to backoff.
+	return 0
 }
 
 // truncate returns s clipped to n runes with a "..." suffix if clipped.

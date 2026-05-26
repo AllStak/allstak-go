@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// sdkVersion is stamped into the User-Agent header and into the Environment
-// DSN for debugging. Keep in sync with CHANGELOG.md.
-const sdkVersion = "0.1.0"
+// sdkVersion is stamped into the User-Agent header and into the wire
+// sdk.version. It aliases the single source of truth in config.go (SDKVersion)
+// so the User-Agent and the wire metadata can never disagree.
+const sdkVersion = SDKVersion
 
 // Client is the central entry point for the SDK. It owns a background worker
 // goroutine per ingest stream (errors, logs, requests, db, spans) that
