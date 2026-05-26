@@ -121,6 +121,13 @@ type Config struct {
 	// to SDKVersion so Release is never empty. Set to a pointer to false to
 	// opt out and leave Release empty when no explicit/env value was provided.
 	AutoDetectRelease *bool
+
+	// AutoRegisterRelease gates best-effort runtime release registration.
+	// When nil (the default) registration is ON for normal binaries: once the
+	// release is resolved, the SDK posts it to /ingest/v1/releases without
+	// requiring CI/CD integration. Go test binaries are skipped unless this is
+	// explicitly set to true.
+	AutoRegisterRelease *bool
 }
 
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.

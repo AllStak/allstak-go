@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,7 +142,34 @@ func newWithTransport(cfg Config, host string, transport ingestTransport) *Clien
 	})
 
 	c.debugf("client initialized: host=%s env=%s service=%s release=%s", host, cfg.Environment, cfg.ServiceName, cfg.Release)
+	c.registerRuntimeRelease()
 	return c
+}
+
+func (c *Client) registerRuntimeRelease() {
+	if c.cfg.APIKey == "" || c.cfg.Release == "" || !shouldRegisterRuntimeRelease(c.cfg.AutoRegisterRelease) {
+		return
+	}
+	payload := map[string]any{
+		"version":     c.cfg.Release,
+		"environment": c.cfg.Environment,
+		"commitSha":   c.cfg.CommitSha,
+		"branch":      c.cfg.Branch,
+		"author":      c.cfg.SDKName + "/" + c.cfg.SDKVersion,
+		"message":     "Registered automatically by AllStak Go SDK at runtime",
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RequestTimeout)
+		defer cancel()
+		_ = c.transport.send(ctx, pathReleases, payload)
+	}()
+}
+
+func shouldRegisterRuntimeRelease(flag *bool) bool {
+	if flag != nil {
+		return *flag
+	}
+	return !strings.HasSuffix(os.Args[0], ".test")
 }
 
 // Config returns a copy of the resolved config (after defaults are applied).
@@ -444,4 +472,3 @@ func (c *Client) debugf(format string, args ...any) {
 	}
 	fmt.Fprintf(stderrWriter, "[allstak] "+format+"\n", args...)
 }
-

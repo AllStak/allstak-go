@@ -21,6 +21,7 @@ const (
 	pathDBQueries    = "/ingest/v1/db"
 	pathSpans        = "/ingest/v1/spans"
 	pathHeartbeat    = "/ingest/v1/heartbeat"
+	pathReleases     = "/ingest/v1/releases"
 )
 
 // httpTransport is the low-level HTTP ingest transport. It knows how to
