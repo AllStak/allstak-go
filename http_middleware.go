@@ -47,6 +47,9 @@ func Middleware(client *Client) func(http.Handler) http.Handler {
 				TraceID:      headers.TraceID,
 				SpanID:       spanID,
 				ParentSpanID: headers.ParentSpanID,
+				// Inbound requests adopt the upstream trace decision; default
+				// to sampled so propagation matches prior "-01" behavior.
+				Sampled: true,
 			})
 			ctx = WithRequestInfo(ctx, &RequestInfo{
 				Method:    r.Method,

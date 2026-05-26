@@ -119,6 +119,12 @@ type SpanContext struct {
 	TraceID      string
 	SpanID       string
 	ParentSpanID string
+	// Sampled is the W3C trace-flags sampled decision for this trace. When a
+	// span context is created without an explicit decision (the legacy path,
+	// e.g. integrations calling WithContextSpan or an inbound traceparent
+	// adopted from upstream) it defaults to true so propagation matches the
+	// historical "-01" behavior. StartSpan sets it from TracesSampleRate.
+	Sampled bool
 }
 
 func withSpan(ctx context.Context, sc *SpanContext) context.Context {
@@ -134,6 +140,9 @@ func WithContextSpan(ctx context.Context, traceID, spanID, parentSpanID string) 
 		TraceID:      traceID,
 		SpanID:       spanID,
 		ParentSpanID: parentSpanID,
+		// Integrations adopt upstream/inbound trace decisions; default to
+		// sampled so propagation matches the prior hardcoded "-01" behavior.
+		Sampled: true,
 	})
 }
 

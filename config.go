@@ -39,6 +39,36 @@ type Config struct {
 	// Debug enables verbose internal logging to stderr. Off by default.
 	Debug bool
 
+	// BeforeSend is an optional hook invoked once per error/message event,
+	// just before it is enqueued to the transport (after the SampleRate gate,
+	// before the PII sanitizer). It receives the fully-enriched ErrorPayload
+	// and may mutate it and return it, or return nil to DROP the event.
+	//
+	// The callback runs on the calling goroutine. It is FAIL-OPEN: if it
+	// panics, the SDK recovers and sends the original (pre-callback) event
+	// rather than crashing the caller. Keep it fast and side-effect-free.
+	BeforeSend func(event *ErrorPayload) *ErrorPayload
+
+	// SampleRate is the fraction of error/message events to keep, in [0.0,
+	// 1.0]. The decision is a deterministic random draw made at capture time.
+	//
+	// Zero value: a zero (or unset) SampleRate is treated as 1.0 — keep every
+	// event. This matches how the rest of Config treats its zero values and
+	// means importing the SDK never silently drops errors. Set e.g. 0.25 to
+	// keep ~25% of events. Values outside [0,1] are clamped.
+	SampleRate float64
+
+	// TracesSampleRate is the fraction of spans to record, in [0.0, 1.0].
+	// Sampling is applied when StartSpan is called, and the decision is
+	// reflected in the propagated W3C traceparent sampled flag (-01 sampled,
+	// -00 not sampled).
+	//
+	// Zero value: a zero (or unset) TracesSampleRate means tracing sampling is
+	// disabled — every span the caller explicitly starts is recorded. Spans
+	// are already opt-in, so the safe default is to keep what was asked for.
+	// Set e.g. 0.1 to record ~10% of spans. Values outside [0,1] are clamped.
+	TracesSampleRate float64
+
 	// FlushInterval is how often the background worker drains the queue.
 	// Defaults to 2s. Must be > 0.
 	FlushInterval time.Duration

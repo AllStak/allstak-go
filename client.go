@@ -215,6 +215,22 @@ func (c *Client) CaptureError(p ErrorPayload) {
 	// commit.sha/branch) into Metadata. Caller-supplied metadata wins.
 	p.Metadata = mergeReleaseTags(p.Metadata, c.cfg.ReleaseTags())
 
+	// Pipeline order: SampleRate drop first (skip dropped events entirely),
+	// then BeforeSend (may mutate or drop). The PII sanitizer runs later, at
+	// the wire chokepoint in transport.send, so it always sees the final
+	// post-BeforeSend payload.
+	if !shouldSampleError(c.cfg.SampleRate) {
+		c.dropped.Add(1)
+		return
+	}
+	event := c.applyBeforeSend(&p)
+	if event == nil {
+		// BeforeSend returned nil — drop the event.
+		c.dropped.Add(1)
+		return
+	}
+	p = *event
+
 	select {
 	case c.errs <- &p:
 	default:

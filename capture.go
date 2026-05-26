@@ -243,19 +243,31 @@ func (c *Client) StartSpan(ctx context.Context, operation string) (context.Conte
 
 	traceID := ""
 	parentSpanID := ""
+	// Sampling decision: a child span inherits its parent trace's sampled
+	// decision (W3C: the head-of-trace decision is sticky). A root span draws
+	// from TracesSampleRate. This keeps a single trace internally consistent.
+	sampled := true
 	if parent != nil {
 		traceID = parent.TraceID
 		parentSpanID = parent.SpanID
+		sampled = parent.Sampled
+	} else {
+		sampled = shouldSampleTrace(c.cfg.TracesSampleRate)
 	}
 	if traceID == "" {
 		traceID = NewTraceID()
 	}
 	spanID := NewSpanID()
 
-	ctx = withSpan(ctx, &SpanContext{TraceID: traceID, SpanID: spanID, ParentSpanID: parentSpanID})
+	ctx = withSpan(ctx, &SpanContext{TraceID: traceID, SpanID: spanID, ParentSpanID: parentSpanID, Sampled: sampled})
 
 	return ctx, func(err error) {
 		if c.closed.Load() {
+			return
+		}
+		// Not sampled — propagate trace context (already on ctx) but do not
+		// record the span itself.
+		if !sampled {
 			return
 		}
 		end := time.Now()

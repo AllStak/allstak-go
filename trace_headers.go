@@ -93,29 +93,67 @@ func MergeBaggage(existing, traceID, requestID, spanID string) string {
 	return strings.Join(parts, ",")
 }
 
+// traceparentFlags returns the W3C trace-flags byte for the sampled decision:
+// "01" when sampled, "00" when not. See
+// https://www.w3.org/TR/trace-context/#trace-flags.
+func traceparentFlags(sampled bool) string {
+	if sampled {
+		return "01"
+	}
+	return "00"
+}
+
+// formatTraceparent builds a W3C `traceparent` value with the given sampled
+// flag. version is fixed at "00".
+func formatTraceparent(traceID, spanID string, sampled bool) string {
+	return "00-" + traceID + "-" + spanID + "-" + traceparentFlags(sampled)
+}
+
 // SetTraceResponseHeaders stamps correlation headers onto an HTTP response.
+// The emitted traceparent is marked sampled ("-01"); use
+// SetTraceResponseHeadersSampled to reflect a not-sampled decision.
 func SetTraceResponseHeaders(h http.Header, traceID, requestID, spanID string) {
+	SetTraceResponseHeadersSampled(h, traceID, requestID, spanID, true)
+}
+
+// SetTraceResponseHeadersSampled is SetTraceResponseHeaders with an explicit
+// sampled decision controlling the traceparent trace-flags ("-01" sampled,
+// "-00" not sampled).
+func SetTraceResponseHeadersSampled(h http.Header, traceID, requestID, spanID string, sampled bool) {
 	h.Set("X-AllStak-Trace-Id", traceID)
 	if requestID != "" {
 		h.Set("X-AllStak-Request-Id", requestID)
 	}
 	if spanID != "" {
 		h.Set("X-AllStak-Span-Id", spanID)
-		h.Set("traceparent", "00-"+traceID+"-"+spanID+"-01")
+		h.Set("traceparent", formatTraceparent(traceID, spanID, sampled))
 	}
 	h.Set("baggage", MergeBaggage(h.Get("baggage"), traceID, requestID, spanID))
 	h.Set("AllStak-Baggage", AllStakBaggage(traceID, requestID, spanID))
 }
 
 // SetTraceRequestHeaders stamps correlation headers onto an outbound request.
+// The sampled flag in the emitted traceparent is taken from the request's
+// SpanContext when present (so a not-sampled trace propagates "-00"); absent a
+// span context it defaults to sampled ("-01").
 func SetTraceRequestHeaders(r *http.Request, traceID, requestID, spanID string) {
+	sampled := true
+	if sc := SpanFromContext(r.Context()); sc != nil {
+		sampled = sc.Sampled
+	}
+	SetTraceRequestHeadersSampled(r, traceID, requestID, spanID, sampled)
+}
+
+// SetTraceRequestHeadersSampled is SetTraceRequestHeaders with an explicit
+// sampled decision controlling the traceparent trace-flags.
+func SetTraceRequestHeadersSampled(r *http.Request, traceID, requestID, spanID string, sampled bool) {
 	r.Header.Set("X-AllStak-Trace-Id", traceID)
 	if requestID != "" {
 		r.Header.Set("X-AllStak-Request-Id", requestID)
 	}
 	if spanID != "" {
 		r.Header.Set("X-AllStak-Span-Id", spanID)
-		r.Header.Set("traceparent", "00-"+traceID+"-"+spanID+"-01")
+		r.Header.Set("traceparent", formatTraceparent(traceID, spanID, sampled))
 	}
 	r.Header.Set("baggage", MergeBaggage(r.Header.Get("baggage"), traceID, requestID, spanID))
 	r.Header.Set("AllStak-Baggage", AllStakBaggage(traceID, requestID, spanID))

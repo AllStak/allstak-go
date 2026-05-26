@@ -4,6 +4,26 @@ All notable changes to the AllStak Go SDK are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`Config.BeforeSend`** hook (`func(event *ErrorPayload) *ErrorPayload`).
+  Invoked once per error/message event, just before it is enqueued to the
+  transport — after the `SampleRate` gate and before the PII sanitizer.
+  Mutate-and-return to modify the event, or return `nil` to drop it. Fail-open:
+  a panicking callback is recovered and the original event is sent rather than
+  crashing capture.
+- **`Config.SampleRate`** (`float64`, default 1.0). Deterministic random drop
+  of error/message events at capture time. A zero/unset value means keep
+  everything (1.0); out-of-range values are clamped to `[0,1]`.
+- **`Config.TracesSampleRate`** (`float64`, default 0 = disabled). Samples span
+  creation in `StartSpan`. A child span inherits its parent trace's decision;
+  root spans draw from this rate. The decision is reflected in the propagated
+  W3C `traceparent` trace-flags (`-01` sampled, `-00` not sampled), replacing
+  the previously hardcoded `-01`. A zero/unset value records every span the
+  caller explicitly starts.
+
 ## [0.2.0] — 2026-05-13
 
 Module path migration. The published module path moved from `allstak-io` to
