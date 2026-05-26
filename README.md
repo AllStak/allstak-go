@@ -82,7 +82,6 @@ from handlers, records the inbound request with the matched route template
 | Field | Description |
 | --- | --- |
 | `APIKey` | Project API key. |
-| `Host` | Optional ingest host override for self-hosted AllStak. |
 | `Environment` | Deployment environment. |
 | `Release` | App version or commit SHA. |
 | `ServiceName` | Logical service name. |
