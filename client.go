@@ -37,6 +37,10 @@ type Client struct {
 	dbq      chan *DBQueryItem
 	spans    chan *SpanItem
 
+	// session tracks the single release-health session for this process
+	// (start on New, end on Close). nil when auto session tracking is disabled.
+	session *sessionTracker
+
 	// Lifecycle
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -143,6 +147,13 @@ func newWithTransport(cfg Config, host string, transport ingestTransport) *Clien
 
 	c.debugf("client initialized: host=%s env=%s service=%s release=%s", host, cfg.Environment, cfg.ServiceName, cfg.Release)
 	c.registerRuntimeRelease()
+
+	// Release-health: open one session per process. Fail-open — never block
+	// or panic on init. Sessions are NEVER sampled.
+	if shouldTrackSessions(cfg.EnableAutoSessionTracking) {
+		c.session = &sessionTracker{}
+		c.startSession()
+	}
 	return c
 }
 
@@ -242,6 +253,23 @@ func (c *Client) CaptureError(p ErrorPayload) {
 	// Merge release-tracking tags (sdk.name/version, platform, dist,
 	// commit.sha/branch) into Metadata. Caller-supplied metadata wins.
 	p.Metadata = mergeReleaseTags(p.Metadata, c.cfg.ReleaseTags())
+
+	// Attach the active session id so the backend's error consumer can mark
+	// the session errored/crashed for crash-free release health. Caller-set
+	// ids win (e.g. a request-mode integration).
+	if p.SessionID == "" {
+		p.SessionID = c.sessionID()
+	}
+
+	// Update the in-memory session status. A fatal-level event is an
+	// unhandled/crash; any other error-level event is a handled error. This
+	// happens before sampling so release-health reflects what actually
+	// occurred even when the event itself is sampled out.
+	if p.Level == "fatal" {
+		c.recordSessionCrash()
+	} else {
+		c.recordSessionError()
+	}
 
 	// Pipeline order: SampleRate drop first (skip dropped events entirely),
 	// then BeforeSend (may mutate or drop). The PII sanitizer runs later, at
@@ -451,6 +479,9 @@ func (c *Client) Close(ctx context.Context) error {
 		if err := c.Flush(ctx); err != nil {
 			firstErr = err
 		}
+		// Release-health: close the session with its final status. Best-effort,
+		// short timeout, fail-open — must not block shutdown or surface errors.
+		c.endSession()
 		c.cancel()
 		// Close channels so workers can exit cleanly.
 		close(c.errs)

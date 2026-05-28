@@ -128,6 +128,21 @@ type Config struct {
 	// requiring CI/CD integration. Go test binaries are skipped unless this is
 	// explicitly set to true.
 	AutoRegisterRelease *bool
+
+	// EnableAutoSessionTracking gates release-health session tracking. When
+	// nil (the default) tracking is ON for normal binaries: the SDK opens one
+	// session per process on New and posts /ingest/v1/sessions/start, tracks an
+	// in-memory ok/errored/crashed status, and posts /ingest/v1/sessions/end on
+	// Close. Go test binaries are skipped unless this is explicitly set to true,
+	// so the SDK's own and host applications' unit tests don't emit sessions.
+	// Set a pointer to false to opt out entirely.
+	EnableAutoSessionTracking *bool
+
+	// User is the optional process-level principal stamped on the session
+	// start payload (userId) when set. Leave nil for server-mode services that
+	// have no single user. Per-event user attribution still comes from the
+	// request context via WithUser.
+	User *UserContext
 }
 
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.
