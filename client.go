@@ -41,6 +41,13 @@ type Client struct {
 	// (start on New, end on Close). nil when auto session tracking is disabled.
 	session *sessionTracker
 
+	// spool is the persistent (offline) event store. Events that fail to send
+	// (outage/retries-exhausted) or are still buffered at shutdown are written
+	// here, scrubbed, and replayed on the next init. nil when the offline queue
+	// is disabled or the cache dir is unavailable — every spool method no-ops on
+	// a nil receiver so the rest of the client never nil-checks.
+	spool *spool
+
 	// Lifecycle
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -144,6 +151,24 @@ func newWithTransport(cfg Config, host string, transport ingestTransport) *Clien
 		}
 		return SpanBatch{Spans: items}
 	})
+
+	// Offline durability: construct the persistent spool and replay any events
+	// left over from a previous run (a prior outage or crash). Fail-open — if
+	// the cache dir is unavailable the spool stays nil and the SDK keeps its
+	// existing in-memory behavior. Drain runs in the background so init never
+	// blocks the host on disk or network I/O.
+	if shouldEnableOfflineQueue(cfg.EnableOfflineQueue) {
+		dir := resolveSpoolDir(cfg.OfflineQueueDir)
+		c.spool = newSpool(dir, cfg.OfflineQueueMaxEntries, cfg.OfflineQueueMaxBytes, cfg.OfflineQueueMaxAge, c.debugf)
+		if c.spool != nil {
+			c.wg.Add(1)
+			go func() {
+				defer c.wg.Done()
+				defer func() { _ = recover() }() // never let a drain crash boot
+				c.spool.drain(c.ctx, c.transport)
+			}()
+		}
+	}
 
 	c.debugf("client initialized: host=%s env=%s service=%s release=%s", host, cfg.Environment, cfg.ServiceName, cfg.Release)
 	c.registerRuntimeRelease()
@@ -496,6 +521,35 @@ func (c *Client) Close(ctx context.Context) error {
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────
+
+// persistOnFailure writes a failed-to-deliver payload to the persistent spool
+// so it survives a restart/outage and can be replayed on the next init. It is
+// the worker layer's single persistence hook. No-op (fail-open) when:
+//
+//   - the spool is disabled/unavailable (nil receiver),
+//   - the path is not persistable (sessions/heartbeat/releases are live-only),
+//   - the failure was a PERMANENT 4xx — replaying it would never succeed, so
+//     it is correctly dropped rather than spooled.
+//
+// The payload is run through the PII sanitizer again here before it is written,
+// so secrets/unredacted data NEVER hit disk even though the transport already
+// scrubs on the wire. Scrubbing is idempotent, so the double-scrub is harmless.
+func (c *Client) persistOnFailure(path string, payload any, sendErr error) {
+	if c.spool == nil || !shouldSpoolPath(path) {
+		return
+	}
+	if isPermanentSendError(sendErr) {
+		// 4xx (non-429): the backend rejected it; persisting would just replay a
+		// guaranteed rejection. Drop it (already counted as failed).
+		return
+	}
+	body, err := marshalScrubbed(payload)
+	if err != nil {
+		c.debugf("spool persist marshal failed for %s: %v", path, err)
+		return
+	}
+	c.spool.persist(path, body)
+}
 
 func (c *Client) debugf(format string, args ...any) {
 	if !c.cfg.Debug {

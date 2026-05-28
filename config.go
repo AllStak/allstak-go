@@ -143,6 +143,36 @@ type Config struct {
 	// have no single user. Per-event user attribution still comes from the
 	// request context via WithUser.
 	User *UserContext
+
+	// EnableOfflineQueue gates the persistent (offline) event spool. When nil
+	// (the default) the spool is ON: telemetry that cannot be delivered (network
+	// outage, retries exhausted, or events still buffered at shutdown) is written
+	// — already PII-scrubbed — to a filesystem cache dir and replayed on the next
+	// init, so buffered telemetry survives a process restart and a network
+	// outage. Sessions are never spooled. The spool degrades silently to in-memory
+	// if the cache dir is unavailable/unwritable (read-only FS, serverless, edge).
+	// Set a pointer to false to disable persistence entirely.
+	EnableOfflineQueue *bool
+
+	// OfflineQueueDir overrides the spool directory. When empty the SDK uses
+	// os.UserCacheDir()/allstak-spool, falling back to os.TempDir()/allstak-spool
+	// when no user cache dir is resolvable. Ignored when EnableOfflineQueue is
+	// false.
+	OfflineQueueDir string
+
+	// OfflineQueueMaxEntries caps the number of persisted envelopes. When the cap
+	// is reached the OLDEST envelope is evicted. Zero uses the default (500).
+	OfflineQueueMaxEntries int
+
+	// OfflineQueueMaxBytes caps the total on-disk size of persisted envelopes in
+	// bytes. When the cap is reached the OLDEST envelopes are evicted. Zero uses
+	// the default (8 MiB).
+	OfflineQueueMaxBytes int64
+
+	// OfflineQueueMaxAge is the maximum age of a persisted envelope. Envelopes
+	// older than this are dropped on drain rather than replayed (a stale event is
+	// usually noise). Zero uses the default (48h).
+	OfflineQueueMaxAge time.Duration
 }
 
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.
@@ -250,6 +280,32 @@ func (c Config) applyDefaults() Config {
 		c.Branch = envFirstNonEmpty("ALLSTAK_BRANCH", "GIT_BRANCH", "VERCEL_GIT_COMMIT_REF", "RAILWAY_GIT_BRANCH")
 	}
 	return c
+}
+
+// envOfflineQueue lets deployments toggle the offline spool without a code
+// change (e.g. ALLSTAK_OFFLINE_QUEUE=0 in a known-ephemeral container). An
+// explicit Config flag always wins over the env var.
+const envOfflineQueue = "ALLSTAK_OFFLINE_QUEUE"
+
+// shouldEnableOfflineQueue resolves the EnableOfflineQueue flag. Precedence:
+//  1. explicit Config flag (non-nil) — always wins
+//  2. ALLSTAK_OFFLINE_QUEUE env var ("0"/"false"/"off" disables; anything
+//     else truthy enables)
+//  3. default: ON for normal binaries, OFF under the Go test runtime (binary
+//     name ends in ".test") so the SDK's own and host applications' unit tests
+//     don't write to the real user cache dir. Tests opt in explicitly with a
+//     flag + a temp dir, mirroring the session-tracking test guard.
+func shouldEnableOfflineQueue(flag *bool) bool {
+	if flag != nil {
+		return *flag
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envOfflineQueue))) {
+	case "0", "false", "off", "no":
+		return false
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return !strings.HasSuffix(os.Args[0], ".test")
 }
 
 // resolveHost returns the effective ingest base URL. Precedence:

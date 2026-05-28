@@ -136,9 +136,10 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		}
 
 		// 4xx (except 429) is permanent — no point retrying an invalid key
-		// or a malformed payload.
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-			return fmt.Errorf("allstak: ingest %s returned %d: %s", path, resp.StatusCode, truncate(string(respBody), 300))
+		// or a malformed payload. Returned as a typed permanentSendError so the
+		// offline spool can DROP such an envelope rather than keep replaying it.
+		if is4xxPermanent(resp.StatusCode) {
+			return &permanentSendError{statusCode: resp.StatusCode, path: path, body: string(respBody)}
 		}
 
 		// On 429 (rate limited) and 503 (unavailable) honor a Retry-After

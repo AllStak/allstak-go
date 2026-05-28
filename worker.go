@@ -20,6 +20,10 @@ func runSingleWorker[T any](c *Client, ch <-chan *T, path string) {
 		if err := c.transport.send(ctx, path, item); err != nil {
 			c.failed.Add(1)
 			c.debugf("send %s failed: %v", path, err)
+			// Outage/restart durability: persist the scrubbed payload so the
+			// next init can replay it. Permanent (4xx) failures are not worth
+			// keeping — drop them. Fail-open.
+			c.persistOnFailure(path, item, err)
 		} else {
 			c.sent.Add(1)
 		}
@@ -53,9 +57,12 @@ func runBatchWorker[T any](c *Client, ch <-chan *T, path string, wrap func([]*T)
 
 		ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RequestTimeout*2)
 		defer cancel()
-		if err := c.transport.send(ctx, path, wrap(snapshot)); err != nil {
+		wrapped := wrap(snapshot)
+		if err := c.transport.send(ctx, path, wrapped); err != nil {
 			c.failed.Add(int64(len(snapshot)))
 			c.debugf("batch send %s failed (%d items): %v", path, len(snapshot), err)
+			// Persist the whole scrubbed batch so the next init can replay it.
+			c.persistOnFailure(path, wrapped, err)
 			return
 		}
 		c.sent.Add(int64(len(snapshot)))

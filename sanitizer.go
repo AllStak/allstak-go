@@ -1,6 +1,7 @@
 package allstak
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 )
@@ -137,6 +138,18 @@ func scrubValue(value any, depth int, seen map[uintptr]struct{}) any {
 		// Primitive or unrecognized type — pass through unchanged.
 		return value
 	}
+}
+
+// marshalScrubbed runs payload through the same PII sanitizer the wire
+// transport uses, then marshals it to JSON. It is the single helper for any
+// caller that needs the EXACT scrubbed bytes the transport would send — most
+// importantly the offline spool, which must persist only already-scrubbed data
+// to disk (never raw secrets). Because scrubbing is idempotent, calling this in
+// addition to the transport's own scrub is harmless. Fail-open: scrubbing
+// cannot panic (scrubPayloadSafe recovers); a marshal error is surfaced so the
+// caller can skip persisting rather than write garbage.
+func marshalScrubbed(payload any) ([]byte, error) {
+	return json.Marshal(scrubPayloadSafe(payload))
 }
 
 // scrubPayloadSafe wraps scrubPayload with a recover so a bug in scrubbing can
