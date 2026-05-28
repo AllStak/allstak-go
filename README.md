@@ -98,6 +98,12 @@ The SDK redacts common sensitive headers and fields. Avoid putting secrets in cu
 - Missing request correlation: keep `traceparent`, `baggage`, and `x-request-id` headers through proxies.
 - Short-lived command: call `client.Flush(ctx)` before exit.
 
+## Contributing and Support
+
+- Report bugs with the GitHub bug report template: https://github.com/AllStak/allstak-go/issues/new/choose
+- Open pull requests using the checklist in [CONTRIBUTING.md](CONTRIBUTING.md).
+- Report security vulnerabilities privately through [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT
