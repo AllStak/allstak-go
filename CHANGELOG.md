@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Release-health session tracking.** The SDK now opens one release-health
+  session per process on `New` (`POST /ingest/v1/sessions/start`), tracks an
+  in-memory `ok` → `errored` → `crashed` status that only ever escalates
+  severity, and posts the terminal status with a duration on `Close`
+  (`POST /ingest/v1/sessions/end`), enabling crash-free-session/-user rates on
+  the dashboard. Status moves to `errored` when a handled error is captured and
+  `crashed` on an unhandled/fatal event. Every error/event payload is stamped
+  with the active `sessionId` for attribution. Sessions are NEVER sampled and
+  NEVER spooled (a replayed stale session would skew release-health durations).
+  New config:
+  - **`Config.EnableAutoSessionTracking`** (`*bool`, default ON). Go test
+    binaries are skipped unless explicitly set to `true` so unit tests do not
+    emit sessions. Set to a pointer to `false` to opt out.
+  - **`Config.User`** (`*UserContext`) — optional process-level principal whose
+    `id` is stamped on the session-start payload for crash-free-user rates.
+  - **`Config.Platform`** (`string`, default `"go"`) — runtime identifier sent
+    on session start and as the wire `platform` field.
+- **Offline / persistent transport queue.** Telemetry that cannot be delivered
+  (network outage, retries exhausted, or events still buffered at shutdown) is
+  written — already PII-scrubbed — to a bounded filesystem spool and replayed
+  through the normal transport on the next init, so buffered telemetry survives
+  a process restart and a network outage (Sentry offline-cache parity). One file
+  per envelope, atomic temp+rename writes, bounded by count, total bytes, and
+  max age with oldest-first eviction. Fail-open: degrades silently to in-memory
+  on a read-only FS / serverless / edge runtime. Sessions are never spooled. New
+  config:
+  - **`Config.EnableOfflineQueue`** (`*bool`, default ON; pointer to `false` to
+    disable).
+  - **`Config.OfflineQueueDir`** (default `os.UserCacheDir()/allstak-spool`,
+    falling back to `os.TempDir()/allstak-spool`).
+  - **`Config.OfflineQueueMaxEntries`** (default 500),
+    **`Config.OfflineQueueMaxBytes`** (default 8 MiB),
+    **`Config.OfflineQueueMaxAge`** (default 48h).
 - **`Config.BeforeSend`** hook (`func(event *ErrorPayload) *ErrorPayload`).
   Invoked once per error/message event, just before it is enqueued to the
   transport — after the `SampleRate` gate and before the PII sanitizer.
@@ -23,6 +56,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   W3C `traceparent` trace-flags (`-01` sampled, `-00` not sampled), replacing
   the previously hardcoded `-01`. A zero/unset value records every span the
   caller explicitly starts.
+- **Automatic runtime release detection.** When `Release` is unset the SDK
+  derives it from the binary's embedded VCS info (`runtime/debug.ReadBuildInfo`
+  `vcs.revision`), so a release is attributed CI-free, falling back to the SDK
+  version.
+- **`integrations/allstakecho`** (nested module) — Echo v4 middleware mirroring
+  the net/http behavior: inbound HTTP capture, panic→fatal recovery, returned-
+  error capture, and trace-context propagation with the matched route template.
+
+### Security
+
+- **Value-pattern PII scrubbing + `Config.SendDefaultPii`.** Beyond the existing
+  key-name secret denylist, free-text values (error/log/breadcrumb messages,
+  metadata/extra/tag values, captured headers/bodies) are now scrubbed by
+  pattern. Luhn-valid credit-card numbers and hyphenated US SSNs are ALWAYS
+  redacted. Email addresses and IPv4 addresses are scrubbed by default and pass
+  through only when `Config.SendDefaultPii` is set to a pointer to `true`
+  (mirrors Sentry's `send_default_pii`, default FALSE). The
+  `ALLSTAK_SEND_DEFAULT_PII` env var can toggle it without a code change. The
+  explicit `WithUser` user object (`id`/`email`/`ip`) is intentional
+  identification and is unaffected, matching Sentry.
+
+### Fixed
+
+- **Integration module path casing.** Nested integration modules now import the
+  root module as `github.com/AllStak/allstak-go` (correct org casing), keeping
+  `go.mod` paths consistent with the published module.
+- **Data race in the Gin and GORM integration tests.** The test transport
+  callback runs in the SDK background batch-worker goroutine; the captured
+  result slices are now guarded by a `sync.Mutex` so `go test -race ./...` is
+  clean in those submodules (matching the existing Echo test pattern).
 
 ## [0.2.0] — 2026-05-13
 

@@ -3,6 +3,7 @@ package allstakgorm
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,14 +18,22 @@ type orderRow struct {
 }
 
 func TestInstrumentCapturesTraceCorrelatedQueries(t *testing.T) {
-	var batches []allstak.DBQueryBatch
+	// The transport callback runs in the SDK background batch-worker
+	// goroutine, so the captured slice must be guarded against the test
+	// goroutine that reads it after Flush.
+	var (
+		mu      sync.Mutex
+		batches []allstak.DBQueryBatch
+	)
 	client := allstak.NewWithTransport(allstak.Config{
 		APIKey:        "ask_test",
 		FlushInterval: time.Millisecond,
 		BatchSize:     1,
 	}, allstak.TransportFunc(func(_ context.Context, path string, payload any) error {
 		if path == "/ingest/v1/db" {
+			mu.Lock()
 			batches = append(batches, payload.(allstak.DBQueryBatch))
+			mu.Unlock()
 		}
 		return nil
 	}))
@@ -50,6 +59,8 @@ func TestInstrumentCapturesTraceCorrelatedQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	if len(batches) == 0 {
 		t.Fatal("expected captured db query batch")
 	}

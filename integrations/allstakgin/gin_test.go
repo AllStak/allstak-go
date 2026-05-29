@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,14 +15,22 @@ import (
 func TestMiddlewareCapturesRequestCorrelation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	var batches []allstak.HTTPRequestBatch
+	// The transport callback runs in the SDK background batch-worker
+	// goroutine, so the captured slice must be guarded against the test
+	// goroutine that reads it after Flush.
+	var (
+		mu      sync.Mutex
+		batches []allstak.HTTPRequestBatch
+	)
 	client := allstak.NewWithTransport(allstak.Config{
 		APIKey:        "ask_test",
 		FlushInterval: time.Millisecond,
 		BatchSize:     1,
 	}, allstak.TransportFunc(func(_ context.Context, path string, payload any) error {
 		if path == "/ingest/v1/http-requests" {
+			mu.Lock()
 			batches = append(batches, payload.(allstak.HTTPRequestBatch))
+			mu.Unlock()
 		}
 		return nil
 	}))
@@ -49,6 +58,9 @@ func TestMiddlewareCapturesRequestCorrelation(t *testing.T) {
 	if rec.Header().Get("X-AllStak-Request-Id") != "req-1" {
 		t.Fatalf("request response header missing: %q", rec.Header().Get("X-AllStak-Request-Id"))
 	}
+
+	mu.Lock()
+	defer mu.Unlock()
 	if len(batches) != 1 || len(batches[0].Requests) != 1 {
 		t.Fatalf("expected one captured request, got %#v", batches)
 	}

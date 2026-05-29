@@ -1,0 +1,30 @@
+# Compiled Go binaries and test artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Coverage / profiling output
+coverage.out
+coverage.txt
+coverage.html
+*.cover
+*.prof
+*.pprof
+
+# Go workspace file (per-developer, not committed)
+go.work
+go.work.sum
+
+# Offline event spool (created at runtime, never source)
+allstak-spool/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
