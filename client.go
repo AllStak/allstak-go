@@ -75,7 +75,7 @@ type ingestTransport interface {
 func New(cfg Config) *Client {
 	cfg = cfg.applyDefaults()
 	host := resolveHost()
-	transport := newHTTPTransport(host, cfg.APIKey, cfg.RequestTimeout, cfg.MaxRetries, cfg.Debug)
+	transport := newHTTPTransport(host, cfg.APIKey, cfg.RequestTimeout, cfg.MaxRetries, cfg.Debug, cfg.scrubOptions())
 	return newWithTransport(cfg, host, transport)
 }
 
@@ -543,7 +543,7 @@ func (c *Client) persistOnFailure(path string, payload any, sendErr error) {
 		// guaranteed rejection. Drop it (already counted as failed).
 		return
 	}
-	body, err := marshalScrubbed(payload)
+	body, err := marshalScrubbed(payload, c.cfg.scrubOptions())
 	if err != nil {
 		c.debugf("spool persist marshal failed for %s: %v", path, err)
 		return

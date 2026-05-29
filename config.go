@@ -173,6 +173,26 @@ type Config struct {
 	// older than this are dropped on drain rather than replayed (a stale event is
 	// usually noise). Zero uses the default (48h).
 	OfflineQueueMaxAge time.Duration
+
+	// SendDefaultPii controls whether commonly-PII free-text values are sent.
+	// It mirrors Sentry's send_default_pii and defaults to FALSE (nil = false):
+	//
+	//   - When FALSE (the default), the SDK additionally scrubs email addresses
+	//     and IPv4 addresses out of free-text values (error/log/breadcrumb
+	//     messages, metadata/extra/tag values, captured HTTP headers/bodies)
+	//     before they go on the wire.
+	//   - When TRUE, the host has explicitly opted into PII, so those email/IPv4
+	//     value scrubbers are disabled and such values pass through.
+	//
+	// Independently of this flag, credit-card numbers (Luhn-valid) and
+	// hyphenated US SSNs are ALWAYS scrubbed from free-text values, and the
+	// existing key-name secret redaction (password/token/cookie/etc.) ALWAYS
+	// applies. This flag does NOT affect the explicit User set via WithUser —
+	// user.id/email/ip are intentional identification and ship as before,
+	// matching Sentry.
+	//
+	// Set a pointer to true to enable; leave nil for the secure default.
+	SendDefaultPii *bool
 }
 
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.
@@ -306,6 +326,38 @@ func shouldEnableOfflineQueue(flag *bool) bool {
 		return true
 	}
 	return !strings.HasSuffix(os.Args[0], ".test")
+}
+
+// envSendDefaultPii lets deployments toggle PII passthrough without a code
+// change. An explicit Config flag always wins over the env var.
+const envSendDefaultPii = "ALLSTAK_SEND_DEFAULT_PII"
+
+// resolveSendDefaultPii resolves the SendDefaultPii flag. Precedence:
+//  1. explicit Config flag (non-nil) — always wins
+//  2. ALLSTAK_SEND_DEFAULT_PII env var ("1"/"true"/"on"/"yes" enables PII
+//     passthrough; "0"/"false"/"off"/"no" forces the secure default)
+//  3. default: FALSE (Sentry parity) — email/IPv4 value scrubbing is ON.
+func resolveSendDefaultPii(flag *bool) bool {
+	if flag != nil {
+		return *flag
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envSendDefaultPii))) {
+	case "1", "true", "on", "yes":
+		return true
+	case "0", "false", "off", "no":
+		return false
+	}
+	return false
+}
+
+// scrubOptions returns the resolved value-scrubbing policy for this config. The
+// wire path always scrubs values; sendDefaultPii only gates the email/IPv4
+// layer (credit-card + SSN are always on).
+func (c Config) scrubOptions() scrubOptions {
+	return scrubOptions{
+		scrubValues:    true,
+		sendDefaultPii: resolveSendDefaultPii(c.SendDefaultPii),
+	}
 }
 
 // resolveHost returns the effective ingest base URL. Precedence:

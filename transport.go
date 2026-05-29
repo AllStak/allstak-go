@@ -36,17 +36,21 @@ type httpTransport struct {
 	httpClient *http.Client
 	maxRetries int
 	debug      bool
+	// scrubOpts is the resolved value-scrubbing policy (sendDefaultPii) applied
+	// at the wire chokepoint. Computed once from Config at construction.
+	scrubOpts scrubOptions
 }
 
 // newHTTPTransport constructs a transport wired to the given host. A nil
 // httpClient uses a fresh default client with the configured timeout.
-func newHTTPTransport(host, apiKey string, timeout time.Duration, maxRetries int, debug bool) *httpTransport {
+func newHTTPTransport(host, apiKey string, timeout time.Duration, maxRetries int, debug bool, scrubOpts scrubOptions) *httpTransport {
 	return &httpTransport{
 		host:       host,
 		apiKey:     apiKey,
 		httpClient: &http.Client{Timeout: timeout},
 		maxRetries: maxRetries,
 		debug:      debug,
+		scrubOpts:  scrubOpts,
 	}
 }
 
@@ -62,11 +66,11 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		return nil
 	}
 
-	// Scrub PII / secrets from user-supplied maps exactly once, here at the
-	// single wire chokepoint, before marshalling. Fail-open: if scrubbing
-	// panics for any reason we fall back to the original payload rather than
-	// dropping the event.
-	payload = scrubPayloadSafe(payload)
+	// Scrub PII / secrets from user-supplied maps and free-text values exactly
+	// once, here at the single wire chokepoint, before marshalling. Fail-open:
+	// if scrubbing panics for any reason we fall back to the original payload
+	// rather than dropping the event.
+	payload = scrubPayloadSafe(payload, t.scrubOpts)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
