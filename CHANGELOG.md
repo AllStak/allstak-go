@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (network outage, retries exhausted, or events still buffered at shutdown) is
   written — already PII-scrubbed — to a bounded filesystem spool and replayed
   through the normal transport on the next init, so buffered telemetry survives
-  a process restart and a network outage (Sentry offline-cache parity). One file
+  a process restart and a network outage (offline-cache parity). One file
   per envelope, atomic temp+rename writes, bounded by count, total bytes, and
   max age with oldest-first eviction. Fail-open: degrades silently to in-memory
   on a read-only FS / serverless / edge runtime. Sessions are never spooled. New
@@ -74,10 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pattern. Luhn-valid credit-card numbers and hyphenated US SSNs are ALWAYS
   redacted. Email addresses and IPv4 addresses are scrubbed by default and pass
   through only when `Config.SendDefaultPii` is set to a pointer to `true`
-  (mirrors Sentry's `send_default_pii`, default FALSE). The
+  (mirrors the `send_default_pii`, default FALSE). The
   `ALLSTAK_SEND_DEFAULT_PII` env var can toggle it without a code change. The
   explicit `WithUser` user object (`id`/`email`/`ip`) is intentional
-  identification and is unaffected, matching Sentry.
+  identification and is unaffected, matching.
 
 ### Fixed
 
