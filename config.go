@@ -198,7 +198,7 @@ type Config struct {
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.
 const (
 	SDKName    = "allstak-go"
-	SDKVersion = "0.2.0"
+	SDKVersion = "0.3.0"
 )
 
 // envFirstNonEmpty returns the first non-empty value of the listed env vars,
