@@ -1,4 +1,4 @@
-module github.com/allstak/allstak-go/integrations/allstakgin
+module github.com/AllStak/allstak-go/integrations/allstakgin
 
 go 1.23.4
 
