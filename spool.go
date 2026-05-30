@@ -18,8 +18,8 @@ import (
 // Offline / persistent event spool.
 //
 // Goal: buffered telemetry must survive a process restart AND a network
-// outage, reaching @sentry parity (Sentry persists envelopes to an offline
-// cache dir). When an event cannot be delivered — network error, retries
+// outage by persisting undelivered envelopes to an offline cache dir. When an
+// event cannot be delivered — network error, retries
 // exhausted, the host is offline, or the process is shutting down with the
 // in-memory queue still full — the (already PII-scrubbed) payload is written
 // to a filesystem spool directory instead of being dropped. On the next SDK

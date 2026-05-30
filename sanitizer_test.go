@@ -188,7 +188,7 @@ func TestScrubPayloadSafeFailOpenPassthrough(t *testing.T) {
 
 // ── Value-pattern scrubbing (CC / SSN / email / IPv4) ──────────────────────
 
-// piiOff is the wire default (Sentry parity): value scrubbing on, PII off.
+// piiOff is the wire default: value scrubbing on, PII off.
 var piiOff = scrubOptions{scrubValues: true, sendDefaultPii: false}
 
 // piiOn models a host that opted into PII via SendDefaultPii=true.
@@ -427,7 +427,7 @@ func TestScrubPayloadSafeValueScrubFailOpen(t *testing.T) {
 }
 
 func TestConfigScrubOptionsDefaultAndOverride(t *testing.T) {
-	// Default (nil flag) => sendDefaultPii false (Sentry parity).
+	// Default (nil flag) => sendDefaultPii false.
 	if opts := (Config{}).scrubOptions(); !opts.scrubValues || opts.sendDefaultPii {
 		t.Errorf("default scrubOptions = %+v, want {scrubValues:true sendDefaultPii:false}", opts)
 	}

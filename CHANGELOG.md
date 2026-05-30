@@ -6,6 +6,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-30
+
+### Added
+
+- **Automatic breadcrumbs.** A bounded (100-entry) request-scoped breadcrumb
+  ring buffer now lives in the per-request state bag the middleware installs.
+  After registration the http/db/log layers emit crumbs automatically with no
+  per-call code, and `enrichFromContext` attaches the buffered trail to every
+  error captured during the request, so a captured error carries the activity
+  that led up to it:
+  - the inbound middleware (net/http, Gin, Echo) records the request as an
+    `http`/`http.inbound` crumb when it finishes;
+  - the outbound `RoundTripper` records each call as an `http.outbound` crumb
+    (level escalates to `warning` on a 4xx/5xx/transport failure);
+  - the GORM after-callback records each statement as a `db.query` crumb with
+    the NORMALIZED SQL (no bound values) — level escalates to `error` on a
+    failed query;
+  - the structured-log helpers (`Info`/`Warn`/`Error`/`Debug`) and the new log
+    bridges mirror each line as a `log` crumb so the trail interleaves logs with
+    http/db activity chronologically.
+
+  New surface:
+  - **`Client.AddBreadcrumb(ctx, Breadcrumb)`** — manual crumb on the
+    request-scoped trail (no-op outside an instrumented context).
+  - **`WithBreadcrumbs(ctx)`** — install a request-scoped buffer on a context
+    you manage yourself (e.g. a background worker) so it accrues an auto-trail.
+  - **`AddHTTPBreadcrumb` / `AddDBBreadcrumb`** — integration-facing crumb
+    emitters for adapters living in their own modules.
+
+  Breadcrumb messages and data are scrubbed at the wire chokepoint exactly as
+  before (the value/PII sanitizer already covers the `Breadcrumbs` field).
+- **Goroutine panic handling.** `Client.SafeGo(ctx, fn)` runs `fn` in a new
+  goroutine with a deferred guard that captures a panic as a FATAL error (with
+  the exact panic stack and the context's user/request/trace + breadcrumb trail)
+  and RE-PANICS so the runtime's default crash behavior is preserved.
+  `Client.SafeGoSuppress(ctx, fn)` is the swallowing variant for fire-and-forget
+  work. Package-level `allstak.Go(fn)` / `allstak.GoCtx(ctx, fn)` are drop-in
+  replacements for `go` over the default client. `Client.RecoverHandler` /
+  `RecoverHandlerFunc` add crash safety (capture + 500) to a single handler
+  without full instrumentation. Wrap worker pools / errgroup goroutines with
+  `SafeGo` so background panics — which the inbound middleware can never see —
+  are still reported.
+- **Logging-framework bridges.** New opt-in integration packages ship structured
+  logs to `/ingest/v1/logs`, stamp the active trace / span / request / user ids
+  from the context, mirror each line onto the breadcrumb trail, and PROMOTE an
+  `error`-or-above record that carries an attached `error` value to the Errors
+  stream as a first-class, grouped error:
+  - **`integrations/allstakslog`** — a `slog.Handler` (standard library only, no
+    third-party deps), defaults to teeing through to a local handler.
+  - **`integrations/allstakzap`** — a `zapcore.Core` plus a `Wrap` helper that
+    tees onto an existing zap logger; `WithContext` carries the request context.
+  - **`integrations/allstaklogrus`** — a `logrus.Hook` that picks up the entry's
+    `Context` for correlation.
+
+  The promotion rule and id-stamping live in one place (`Client.BridgeLog` /
+  `BridgeRecord`) so all three bridges behave identically.
+- **Zero-config init.** `allstak.InitFromEnv()` constructs a client purely from
+  `ALLSTAK_*` environment variables and installs it as the package default, so
+  `allstak.Go`, `allstak.CaptureException`, `allstak.HTTPClient`, and
+  `allstak.Close` work with no wiring. `Client.HTTPClient(inner)` returns an
+  `*http.Client` pre-wired with outbound capture + trace propagation;
+  `Client.WrapHTTPClient(hc)` instruments an existing client in place
+  (preserving its `Timeout`/`Jar`/`CheckRedirect`). `SetDefault`/`Default` let
+  apps that build the client explicitly opt into the package-level API.
+  Recognized env vars: `ALLSTAK_API_KEY`, `ALLSTAK_ENVIRONMENT`,
+  `ALLSTAK_SERVICE_NAME`, `ALLSTAK_RELEASE`, `ALLSTAK_DEBUG`,
+  `ALLSTAK_SAMPLE_RATE`, `ALLSTAK_TRACES_SAMPLE_RATE`, `ALLSTAK_DIST` (plus the
+  existing `ALLSTAK_HOST` / offline-queue / PII vars).
+
+### Notes
+
+- All new behavior is default-on but individually toggleable and fail-open: the
+  breadcrumb buffer is allocated lazily and only when a request-state bag is
+  present; the package-level helpers are no-ops until a default client is
+  installed; the log bridges are opt-in (you choose to attach them). No existing
+  API, payload shape, or wire contract changed.
+
 ## [0.3.0] — 2026-05-29
 
 ### Added

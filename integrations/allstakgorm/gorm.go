@@ -180,12 +180,16 @@ func (p *plugin) after(db *gorm.DB) {
 	}
 
 	// Correlate with the active trace if the statement was built from a
-	// context-bearing query (e.g. db.WithContext(ctx).Find(...)).
+	// context-bearing query (e.g. db.WithContext(ctx).Find(...)), and drop a
+	// breadcrumb on the request-scoped trail so an error captured later in the
+	// same request shows the query (normalized — no bound values) that ran
+	// just before it.
 	if db.Statement.Context != nil {
 		if tid, sid := allstak.TraceFromContext(db.Statement.Context); tid != "" {
 			item.TraceID = tid
 			item.SpanID = sid
 		}
+		allstak.AddDBBreadcrumb(db.Statement.Context, item.QueryType, item.NormalizedQuery, item.Status, item.DurationMs, item.RowsAffected)
 	}
 
 	p.client.CaptureDBQuery(item)

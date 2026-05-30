@@ -17,11 +17,11 @@ import (
 //
 // The ordering invariant (documented on Client.applyPipeline below) is:
 //
-//	SampleRate drop  →  BeforeSend  →  (PII sanitizer, in transport)  →  transport
+//	SampleRate drop  →  pre-hook sanitizer  →  BeforeSend  →  final sanitizer  →  transport
 //
-// The sanitizer runs later, at the single wire chokepoint in transport.send,
-// so it always sees the final post-BeforeSend payload. Keeping it there means
-// BeforeSend can never accidentally reintroduce PII that escapes scrubbing.
+// The sanitizer runs before BeforeSend and again at the single wire chokepoint
+// in transport.send. Hooks receive a sanitized event, and any values reintroduced
+// by a hook are sanitized again before persistence/network send.
 
 // sampleFunc is the seam tests override to make sampling deterministic. It
 // returns a float64 in [0.0, 1.0) — the same contract as math/rand.Float64.
@@ -96,21 +96,24 @@ func shouldSampleTrace(rate float64) bool {
 }
 
 // applyBeforeSend runs the user's BeforeSend callback (if configured) against
-// a copy-by-value of the payload. It is FAIL-OPEN: if the callback panics, we
-// recover, log under Debug, and fall back to sending the ORIGINAL event — a
-// buggy user callback must never crash the capture path or silently lose
-// errors. Returning nil from the callback DROPS the event (returns nil here).
+// a sanitized copy of the payload. It is FAIL-OPEN: if the callback panics, we
+// recover, log under Debug, and fall back to sending the pre-sanitized event.
+// Returning nil from the callback DROPS the event (returns nil here).
 func (c *Client) applyBeforeSend(p *ErrorPayload) (out *ErrorPayload) {
-	if c.cfg.BeforeSend == nil {
-		return p
+	sanitized, ok := scrubPayloadSafe(p, c.cfg.scrubOptions()).(*ErrorPayload)
+	if !ok || sanitized == nil {
+		sanitized = p
 	}
-	// Fail-open guard: a panicking callback yields the original event.
-	out = p
+	if c.cfg.BeforeSend == nil {
+		return sanitized
+	}
+	// Fail-open guard: a panicking callback yields the sanitized event.
+	out = sanitized
 	defer func() {
 		if r := recover(); r != nil {
-			c.debugf("BeforeSend panicked, sending original event: %v", r)
-			out = p
+			c.debugf("BeforeSend panicked, sending sanitized event: %v", r)
+			out = sanitized
 		}
 	}()
-	return c.cfg.BeforeSend(p)
+	return c.cfg.BeforeSend(sanitized)
 }

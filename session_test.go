@@ -2,6 +2,8 @@ package allstak
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -25,6 +27,12 @@ func sessionTestConfig() Config {
 		Platform:                  "go",
 		EnableAutoSessionTracking: boolPtr(true),
 	}
+}
+
+func sessionRecoveryTestConfig(t *testing.T) Config {
+	cfg := sessionTestConfig()
+	cfg.OfflineQueueDir = t.TempDir()
+	return cfg
 }
 
 // findSend returns the first recorded send to path, or false.
@@ -241,6 +249,124 @@ func TestSessionEndIsIdempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("recorded %d session-end sends, want exactly 1", count)
+	}
+}
+
+func TestSessionRecoveryCleanShutdownDoesNotReportAbnormal(t *testing.T) {
+	cfg := sessionRecoveryTestConfig(t)
+	rt1 := &recordingTransport{}
+	client1 := newWithTransport(cfg, INGEST_HOST, rt1)
+	rt1.waitFor(t, 1)
+	if err := client1.Close(context.Background()); err != nil {
+		t.Fatalf("Close first: %v", err)
+	}
+
+	rt2 := &recordingTransport{}
+	client2 := newWithTransport(cfg, INGEST_HOST, rt2)
+	defer client2.Close(context.Background())
+	sends := rt2.waitFor(t, 1)
+	for _, s := range sends {
+		if s.path == pathSessionsEnd {
+			t.Fatalf("clean shutdown recovered an abnormal session: %+v", s.payload)
+		}
+	}
+}
+
+func TestSessionRecoveryOpenSessionReportsAbnormal(t *testing.T) {
+	cfg := sessionRecoveryTestConfig(t)
+	rt1 := &recordingTransport{}
+	client1 := newWithTransport(cfg, INGEST_HOST, rt1)
+	_ = client1 // intentionally left open to simulate a killed process
+	rt1.waitFor(t, 1)
+	previousID := client1.sessionID()
+
+	rt2 := &recordingTransport{}
+	client2 := newWithTransport(cfg, INGEST_HOST, rt2)
+	defer client2.Close(context.Background())
+	sends := rt2.waitFor(t, 2)
+	end, ok := findSend(sends, pathSessionsEnd)
+	if !ok {
+		t.Fatalf("no recovered session end; got %+v", sends)
+	}
+	p := end.payload.(sessionEndPayload)
+	if p.SessionID != previousID {
+		t.Fatalf("recovered SessionID = %q, want %q", p.SessionID, previousID)
+	}
+	if p.Status != statusAbnormal {
+		t.Fatalf("recovered Status = %q, want abnormal", p.Status)
+	}
+}
+
+func TestSessionRecoveryCrashedSessionReportsCrashed(t *testing.T) {
+	cfg := sessionRecoveryTestConfig(t)
+	rt1 := &recordingTransport{}
+	client1 := newWithTransport(cfg, INGEST_HOST, rt1)
+	rt1.waitFor(t, 1)
+	previousID := client1.sessionID()
+	client1.CaptureError(ErrorPayload{ExceptionClass: "panic", Message: "fatal", Level: "fatal"})
+
+	rt2 := &recordingTransport{}
+	client2 := newWithTransport(cfg, INGEST_HOST, rt2)
+	defer client2.Close(context.Background())
+	sends := rt2.waitFor(t, 2)
+	end, ok := findSend(sends, pathSessionsEnd)
+	if !ok {
+		t.Fatalf("no recovered session end; got %+v", sends)
+	}
+	p := end.payload.(sessionEndPayload)
+	if p.SessionID != previousID {
+		t.Fatalf("recovered SessionID = %q, want %q", p.SessionID, previousID)
+	}
+	if p.Status != statusCrashed {
+		t.Fatalf("recovered Status = %q, want crashed", p.Status)
+	}
+}
+
+func TestSessionRecoveryCorruptStateDoesNotCrash(t *testing.T) {
+	cfg := sessionRecoveryTestConfig(t)
+	path := sessionStatePath(cfg)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+	rt := &recordingTransport{}
+	client := newWithTransport(cfg, INGEST_HOST, rt)
+	defer client.Close(context.Background())
+	sends := rt.waitFor(t, 1)
+	for _, s := range sends {
+		if s.path == pathSessionsEnd {
+			t.Fatalf("corrupt state emitted session end: %+v", s.payload)
+		}
+	}
+}
+
+func TestSessionRecoveryDoesNotDuplicateRecoveredAbnormal(t *testing.T) {
+	cfg := sessionRecoveryTestConfig(t)
+	rt1 := &recordingTransport{}
+	client1 := newWithTransport(cfg, INGEST_HOST, rt1)
+	_ = client1 // intentionally left open to simulate a killed process
+	rt1.waitFor(t, 1)
+
+	rt2 := &recordingTransport{}
+	client2 := newWithTransport(cfg, INGEST_HOST, rt2)
+	rt2.waitFor(t, 2)
+	if err := client2.Close(context.Background()); err != nil {
+		t.Fatalf("Close second: %v", err)
+	}
+
+	rt3 := &recordingTransport{}
+	client3 := newWithTransport(cfg, INGEST_HOST, rt3)
+	defer client3.Close(context.Background())
+	sends := rt3.waitFor(t, 1)
+	for _, s := range sends {
+		if s.path == pathSessionsEnd {
+			p := s.payload.(sessionEndPayload)
+			if p.Status == statusAbnormal {
+				t.Fatalf("duplicated recovered abnormal session: %+v", p)
+			}
+		}
 	}
 }
 

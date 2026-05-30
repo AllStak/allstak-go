@@ -224,6 +224,10 @@ func (c *Client) log(ctx context.Context, level, message string, fields []Field)
 	if rid := RequestIDFromContext(ctx); rid != "" {
 		p.RequestID = rid
 	}
+	// Auto-breadcrumb: mirror the log line onto the request-scoped trail so a
+	// later error capture shows the structured logs that preceded it,
+	// interleaved chronologically with http/db crumbs.
+	addBreadcrumb(ctx, logBreadcrumb(level, message, fields))
 	c.CaptureLog(p)
 }
 

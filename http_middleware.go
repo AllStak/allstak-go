@@ -108,6 +108,9 @@ func (c *Client) captureInbound(ctx context.Context, r *http.Request, rw *status
 	if u := UserFromContext(ctx); u != nil {
 		item.UserID = u.ID
 	}
+	// Auto-breadcrumb: record the inbound request on the request-scoped trail
+	// so an error captured later in the same request shows the entry point.
+	addBreadcrumb(ctx, httpBreadcrumb("inbound", r.Method, r.Host, r.URL.Path, rw.status, item.DurationMs))
 	c.CaptureHTTPRequest(item)
 }
 

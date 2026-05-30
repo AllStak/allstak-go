@@ -92,6 +92,11 @@ func (t *outboundTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		}
 	}
 
+	// Auto-breadcrumb: record the outbound call on the request-scoped trail so
+	// an error captured later in the same request shows which dependency was
+	// hit (and whether it failed) just before the failure.
+	addBreadcrumb(req.Context(), httpBreadcrumb("outbound", req.Method, req.URL.Host, req.URL.Path, item.StatusCode, item.DurationMs))
+
 	t.client.CaptureHTTPRequest(item)
 	return resp, err
 }

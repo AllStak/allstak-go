@@ -3,8 +3,11 @@ package allstak
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,8 +20,18 @@ const (
 	pathSessionsEnd   = "/ingest/v1/sessions/end"
 )
 
+const (
+	sessionStateVersion     = 1
+	sessionStateMaxAge      = 7 * 24 * time.Hour
+	sessionRecoveryLockTTL  = 30 * time.Second
+	sessionRecoveryMaxTries = 3
+	sessionStateDirectory   = "allstak-session-state"
+	sessionStateFilePrefix  = "session-"
+	sessionStateFileSuffix  = ".json"
+)
+
 // Session-status wire values. They match the AllStak backend's
-// /ingest/v1/sessions/end contract and Sentry's release-health conventions:
+// /ingest/v1/sessions/end contract and standard release-health conventions:
 //
 //   - "ok"       — session ended normally with at most non-fatal events.
 //   - "errored"  — at least one handled error-level event landed during the
@@ -153,6 +166,26 @@ type sessionEndPayload struct {
 	Status     string `json:"status,omitempty"`
 }
 
+type persistedSessionState struct {
+	Version           int    `json:"version"`
+	SessionID         string `json:"sessionId"`
+	StartedAtUnixMs   int64  `json:"startedAt"`
+	UpdatedAtUnixMs   int64  `json:"updatedAt"`
+	Status            string `json:"status"`
+	Release           string `json:"release,omitempty"`
+	Environment       string `json:"environment,omitempty"`
+	UserID            string `json:"userId,omitempty"`
+	SDKName           string `json:"sdkName,omitempty"`
+	SDKVersion        string `json:"sdkVersion,omitempty"`
+	Platform          string `json:"platform,omitempty"`
+	Closed            bool   `json:"closed,omitempty"`
+	EndedAtUnixMs     int64  `json:"endedAt,omitempty"`
+	RecoveryAttempts  int    `json:"recoveryAttempts,omitempty"`
+	RecoveryLockOwner string `json:"recoveryLockOwner,omitempty"`
+	RecoveryLockUntil int64  `json:"recoveryLockUntil,omitempty"`
+	RecoveredAtUnixMs int64  `json:"recoveredAt,omitempty"`
+}
+
 // sessionTracker owns the process's single release-health session. It is
 // re-entrancy safe: a second start() is a no-op, and once ended the tracker
 // does not re-arm. One instance per Client. Mirrors the Java SessionTracker.
@@ -160,6 +193,7 @@ type sessionTracker struct {
 	startOnce sync.Once
 	endOnce   sync.Once
 	active    atomic.Pointer[session]
+	statePath string
 }
 
 // start arms the session and fires the /sessions/start POST through the
@@ -171,6 +205,7 @@ func (c *Client) startSession() {
 		return
 	}
 	c.session.startOnce.Do(func() {
+		c.recoverPreviousSession()
 		s := newSession()
 		c.session.active.Store(s)
 
@@ -193,6 +228,19 @@ func (c *Client) startSession() {
 		if u := c.cfg.User; u != nil {
 			payload.UserID = u.ID
 		}
+		c.writeSessionState(persistedSessionState{
+			Version:         sessionStateVersion,
+			SessionID:       s.id,
+			StartedAtUnixMs: s.startedAt.UnixMilli(),
+			UpdatedAtUnixMs: time.Now().UnixMilli(),
+			Status:          s.currentStatus(),
+			Release:         release,
+			Environment:     c.cfg.Environment,
+			UserID:          payload.UserID,
+			SDKName:         c.cfg.SDKName,
+			SDKVersion:      c.cfg.SDKVersion,
+			Platform:        c.cfg.Platform,
+		})
 
 		go func() {
 			defer func() { _ = recover() }() // never let a session POST crash boot
@@ -215,6 +263,7 @@ func (c *Client) recordSessionError() {
 	}
 	if s := c.session.active.Load(); s != nil {
 		s.recordError()
+		c.updateOpenSessionState(s)
 	}
 }
 
@@ -226,6 +275,7 @@ func (c *Client) recordSessionCrash() {
 	}
 	if s := c.session.active.Load(); s != nil {
 		s.recordCrash()
+		c.updateOpenSessionState(s)
 	}
 }
 
@@ -259,6 +309,20 @@ func (c *Client) endSession() {
 			DurationMs: s.durationMs(),
 			Status:     s.currentStatus(),
 		}
+		c.writeSessionState(persistedSessionState{
+			Version:         sessionStateVersion,
+			SessionID:       s.id,
+			StartedAtUnixMs: s.startedAt.UnixMilli(),
+			UpdatedAtUnixMs: time.Now().UnixMilli(),
+			Status:          payload.Status,
+			Release:         c.cfg.Release,
+			Environment:     c.cfg.Environment,
+			SDKName:         c.cfg.SDKName,
+			SDKVersion:      c.cfg.SDKVersion,
+			Platform:        c.cfg.Platform,
+			Closed:          true,
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+		})
 
 		// Short, bounded timeout so shutdown never hangs on a slow backend.
 		timeout := c.cfg.RequestTimeout
@@ -276,6 +340,155 @@ func (c *Client) endSession() {
 			c.debugf("session ended: %s status=%s errors=%d", s.id, payload.Status, s.errors.Load())
 		}()
 	})
+}
+
+func (c *Client) recoverPreviousSession() {
+	if c.session == nil {
+		return
+	}
+	st, ok := c.readSessionState()
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if st.Closed {
+		c.removeSessionState()
+		return
+	}
+	startedAt := time.UnixMilli(st.StartedAtUnixMs)
+	if st.StartedAtUnixMs <= 0 || now.Sub(startedAt) > sessionStateMaxAge {
+		c.removeSessionState()
+		return
+	}
+	if st.RecoveryAttempts >= sessionRecoveryMaxTries {
+		c.removeSessionState()
+		return
+	}
+	if st.RecoveryLockUntil > now.UnixMilli() {
+		return
+	}
+
+	owner := newSessionID()
+	st.RecoveryAttempts++
+	st.RecoveryLockOwner = owner
+	st.RecoveryLockUntil = now.Add(sessionRecoveryLockTTL).UnixMilli()
+	st.UpdatedAtUnixMs = now.UnixMilli()
+	c.writeSessionState(st)
+	claimed, ok := c.readSessionState()
+	if !ok || claimed.RecoveryLockOwner != owner {
+		return
+	}
+
+	status := statusAbnormal
+	if st.Status == statusCrashed {
+		status = statusCrashed
+	}
+	payload := sessionEndPayload{
+		SessionID:  st.SessionID,
+		DurationMs: maxInt64(0, st.UpdatedAtUnixMs-st.StartedAtUnixMs),
+		Status:     status,
+	}
+	timeout := c.cfg.RequestTimeout
+	if timeout <= 0 || timeout > 2*time.Second {
+		timeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := c.transport.send(ctx, pathSessionsEnd, payload); err != nil {
+		st.RecoveryLockUntil = 0
+		c.writeSessionState(st)
+		c.debugf("session recovery failed: %v", err)
+		return
+	}
+	st.Status = status
+	st.Closed = true
+	st.EndedAtUnixMs = time.Now().UnixMilli()
+	st.RecoveredAtUnixMs = st.EndedAtUnixMs
+	st.RecoveryLockUntil = 0
+	c.writeSessionState(st)
+}
+
+func (c *Client) updateOpenSessionState(s *session) {
+	st, ok := c.readSessionState()
+	if !ok || st.SessionID != s.id || st.Closed {
+		return
+	}
+	st.Status = s.currentStatus()
+	st.UpdatedAtUnixMs = time.Now().UnixMilli()
+	if u := c.cfg.User; u != nil {
+		st.UserID = u.ID
+	}
+	c.writeSessionState(st)
+}
+
+func (c *Client) readSessionState() (persistedSessionState, bool) {
+	if c.session == nil || c.session.statePath == "" {
+		return persistedSessionState{}, false
+	}
+	data, err := os.ReadFile(c.session.statePath)
+	if err != nil {
+		return persistedSessionState{}, false
+	}
+	var st persistedSessionState
+	if err := json.Unmarshal(data, &st); err != nil || !validSessionState(st) {
+		c.removeSessionState()
+		return persistedSessionState{}, false
+	}
+	return st, true
+}
+
+func (c *Client) writeSessionState(st persistedSessionState) {
+	if c.session == nil || c.session.statePath == "" {
+		return
+	}
+	defer func() { _ = recover() }()
+	if err := os.MkdirAll(filepath.Dir(c.session.statePath), 0o700); err != nil {
+		return
+	}
+	data, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	tmp := c.session.statePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, c.session.statePath); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+func (c *Client) removeSessionState() {
+	if c.session == nil || c.session.statePath == "" {
+		return
+	}
+	_ = os.Remove(c.session.statePath)
+}
+
+func validSessionState(st persistedSessionState) bool {
+	if st.Version != sessionStateVersion || st.SessionID == "" || st.StartedAtUnixMs <= 0 || st.UpdatedAtUnixMs <= 0 {
+		return false
+	}
+	return st.Status == statusOK || st.Status == statusErrored || st.Status == statusCrashed || st.Status == statusAbnormal
+}
+
+func sessionStatePath(cfg Config) string {
+	if strings.HasSuffix(os.Args[0], ".test") && cfg.OfflineQueueDir == "" {
+		return ""
+	}
+	base := cfg.OfflineQueueDir
+	if base == "" {
+		base = filepath.Join(os.TempDir(), sessionStateDirectory)
+	}
+	sum := sha256.Sum256([]byte(cfg.APIKey + "|" + cfg.Release + "|" + cfg.Environment))
+	return filepath.Join(base, sessionStateFilePrefix+hex.EncodeToString(sum[:8])+sessionStateFileSuffix)
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // shouldTrackSessions resolves the enableAutoSessionTracking flag. Default is

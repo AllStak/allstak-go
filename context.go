@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"sync"
 )
 
 // Context keys. Using a private type prevents key collisions with any
@@ -31,6 +32,13 @@ const (
 // handler is still holding the original pre-auth context by value.
 type requestState struct {
 	user *User
+
+	// crumbs is the request-scoped breadcrumb ring buffer. It is allocated
+	// lazily (on the first crumb) via crumbsOnce so requests that never emit a
+	// breadcrumb pay nothing. Shared across all middleware layers and the
+	// outbound RoundTripper / DB callbacks because the bag is a pointer.
+	crumbs     *breadcrumbBuffer
+	crumbsOnce sync.Once
 }
 
 // newRequestState allocates a fresh state bag for one request.
@@ -209,6 +217,14 @@ func (c *Client) enrichFromContext(ctx context.Context, p *ErrorPayload) {
 	}
 	if tid, _ := TraceFromContext(ctx); tid != "" {
 		p.TraceID = tid
+	}
+	// Attach the request-scoped breadcrumb trail so a captured error carries
+	// the http/db/log activity that led up to it. Caller-supplied crumbs win:
+	// integrations that already populated Breadcrumbs (rare) keep theirs.
+	if len(p.Breadcrumbs) == 0 {
+		if crumbs := crumbsFromContext(ctx); crumbs != nil {
+			p.Breadcrumbs = crumbs.snapshot()
+		}
 	}
 	if c.cfg.ServiceName != "" {
 		if p.Metadata == nil {

@@ -176,7 +176,7 @@ func newWithTransport(cfg Config, host string, transport ingestTransport) *Clien
 	// Release-health: open one session per process. Fail-open — never block
 	// or panic on init. Sessions are NEVER sampled.
 	if shouldTrackSessions(cfg.EnableAutoSessionTracking) {
-		c.session = &sessionTracker{}
+		c.session = &sessionTracker{statePath: sessionStatePath(cfg)}
 		c.startSession()
 	}
 	return c
@@ -297,9 +297,9 @@ func (c *Client) CaptureError(p ErrorPayload) {
 	}
 
 	// Pipeline order: SampleRate drop first (skip dropped events entirely),
-	// then BeforeSend (may mutate or drop). The PII sanitizer runs later, at
-	// the wire chokepoint in transport.send, so it always sees the final
-	// post-BeforeSend payload.
+	// then a pre-hook sanitizer, then BeforeSend (may mutate or drop). The PII
+	// sanitizer runs again at the wire chokepoint in transport.send, so it
+	// always sees the final post-BeforeSend payload.
 	if !shouldSampleError(c.cfg.SampleRate) {
 		c.dropped.Add(1)
 		return

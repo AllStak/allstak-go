@@ -2,6 +2,8 @@ package allstak
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -110,6 +112,95 @@ func TestBeforeSendPanicFailsOpen(t *testing.T) {
 	}
 	if p.Message != "survive the panic" {
 		t.Fatalf("Message = %q, want original (fail-open should send unmodified event)", p.Message)
+	}
+}
+
+func TestBeforeSendReceivesSanitizedEvent(t *testing.T) {
+	rt := &recordingTransport{}
+	var seen *ErrorPayload
+	c := newTestClient(t, Config{
+		BeforeSend: func(e *ErrorPayload) *ErrorPayload {
+			seen = e
+			return e
+		},
+	}, rt)
+
+	c.CaptureError(ErrorPayload{
+		Message: "card 4111111111111111",
+		Level:   "error",
+		Metadata: map[string]any{
+			"Authorization": "Bearer abc",
+			"nested":        map[string]any{"apiKey": "key-123"},
+		},
+	})
+	_ = rt.waitFor(t, 1)
+
+	if seen == nil {
+		t.Fatal("BeforeSend was not called")
+	}
+	if seen.Message != "card [REDACTED]" {
+		t.Fatalf("BeforeSend Message = %q, want sanitized credit card", seen.Message)
+	}
+	if seen.Metadata["Authorization"] != "[REDACTED]" {
+		t.Fatalf("Authorization metadata = %v, want redacted", seen.Metadata["Authorization"])
+	}
+	nested, _ := seen.Metadata["nested"].(map[string]any)
+	if nested["apiKey"] != "[REDACTED]" {
+		t.Fatalf("nested apiKey = %v, want redacted", nested["apiKey"])
+	}
+}
+
+func TestBeforeSendCannotReintroduceSecretsOnWire(t *testing.T) {
+	bodyCh := make(chan map[string]any, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		bodyCh <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	t.Setenv(envHostOverride, srv.URL)
+
+	c := New(Config{
+		APIKey:         "ask_test",
+		FlushInterval:  10 * time.Millisecond,
+		RequestTimeout: time.Second,
+		MaxRetries:     0,
+		BeforeSend: func(e *ErrorPayload) *ErrorPayload {
+			e.Message = "card 4111111111111111"
+			if e.Metadata == nil {
+				e.Metadata = map[string]any{}
+			}
+			e.Metadata["Authorization"] = "Bearer abc"
+			e.Metadata["nested"] = map[string]any{"token": "secret-token"}
+			return e
+		},
+	})
+	defer c.Close(context.Background())
+
+	c.CaptureMessage(context.Background(), "error", "original")
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	select {
+	case body := <-bodyCh:
+		if got := body["message"]; got != "card [REDACTED]" {
+			t.Fatalf("wire message = %v, want final-sanitized credit card", got)
+		}
+		metadata, _ := body["metadata"].(map[string]any)
+		if metadata["Authorization"] != "[REDACTED]" {
+			t.Fatalf("wire Authorization = %v, want redacted", metadata["Authorization"])
+		}
+		nested, _ := metadata["nested"].(map[string]any)
+		if nested["token"] != "[REDACTED]" {
+			t.Fatalf("wire nested token = %v, want redacted", nested["token"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ingest body")
 	}
 }
 

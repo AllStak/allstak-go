@@ -17,14 +17,14 @@ import (
 //
 // On top of key-name redaction the walk applies VALUE-PATTERN scrubbing to
 // free-text string values for PII that leaks into values regardless of the
-// surrounding key (credit-card numbers, US SSNs, emails, IPv4 addresses),
-// mirroring @sentry's data scrubbing. Value scrubbing is layered:
+// surrounding key (credit-card numbers, US SSNs, emails, IPv4 addresses).
+// Value scrubbing is layered:
 //
 //   - ALWAYS-on (regardless of sendDefaultPii): credit-card numbers that pass
 //     the Luhn checksum, and hyphenated US SSNs. These are high-risk
 //     financial/identity values that are never legitimately wanted in
 //     telemetry.
-//   - Gated by sendDefaultPii (default false = Sentry parity): email addresses
+//   - Gated by sendDefaultPii (default false): email addresses
 //     and IPv4 addresses. When the host opts into PII (sendDefaultPii=true)
 //     these pass through untouched.
 //
@@ -109,7 +109,7 @@ type scrubOptions struct {
 	// key-name redaction runs (used by the legacy key-only helpers/tests).
 	scrubValues bool
 	// sendDefaultPii, when true, DISABLES the email/IPv4 value scrubbers
-	// (the host opted into PII, matching Sentry). The credit-card and SSN
+	// (the host opted into PII). The credit-card and SSN
 	// scrubbers are ALWAYS on regardless of this flag.
 	sendDefaultPii bool
 }
@@ -315,7 +315,7 @@ func scrubPayloadSafe(payload any, opts scrubOptions) (out any) {
 // captured HTTP request/response headers + bodies, and string values inside the
 // free-form maps.
 //
-// Fields that are deliberately NOT value-scrubbed (matching Sentry):
+// Fields that are deliberately NOT value-scrubbed:
 //   - the explicit User object (user.id/email/ip are intentional identification),
 //   - stack frames (filename/function/absPath), release/sdk/platform fields,
 //     span operation/description, URLs/paths, and the SDK's own session id.
@@ -342,7 +342,7 @@ func scrubPayload(payload any, opts scrubOptions) any {
 			cp.Breadcrumbs = bcs
 		}
 		// User is the EXPLICIT principal set via WithUser/setUser — intentional
-		// identification that ships as-is, matching Sentry. StackTrace/Frames,
+		// identification that ships as-is. StackTrace/Frames,
 		// release/sdk/platform, traceId, requestContext (method/path/host/UA),
 		// and sessionId are left untouched on purpose.
 		return &cp

@@ -85,3 +85,74 @@ func TestInstrumentCapturesTraceCorrelatedQueries(t *testing.T) {
 		t.Fatalf("expected at least one trace-correlated query, got %#v", batches)
 	}
 }
+
+func TestInstrumentEmitsDBBreadcrumbOnCapturedError(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		errs []allstak.ErrorPayload
+	)
+	client := allstak.NewWithTransport(allstak.Config{
+		APIKey:        "ask_test",
+		FlushInterval: time.Millisecond,
+		BatchSize:     1,
+	}, allstak.TransportFunc(func(_ context.Context, path string, payload any) error {
+		if path == "/ingest/v1/errors" {
+			if p, ok := payload.(*allstak.ErrorPayload); ok {
+				mu.Lock()
+				errs = append(errs, *p)
+				mu.Unlock()
+			}
+		}
+		return nil
+	}))
+	defer client.Close(context.Background())
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Instrument(db, client); err != nil {
+		t.Fatal(err)
+	}
+
+	// Install a request-scoped breadcrumb buffer so the GORM after-callback
+	// records a crumb, then run a query and capture an error on the SAME ctx.
+	ctx := allstak.WithBreadcrumbs(context.Background())
+	if err := db.WithContext(ctx).AutoMigrate(&orderRow{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WithContext(ctx).Create(&orderRow{Name: "x"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client.CaptureException(ctx, errTest("downstream failure"))
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(errs)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) == 0 {
+		t.Fatal("no error captured")
+	}
+	foundDB := false
+	for _, bc := range errs[0].Breadcrumbs {
+		if bc.Type == "query" && bc.Category == "db.query" {
+			foundDB = true
+		}
+	}
+	if !foundDB {
+		t.Fatalf("expected a db.query breadcrumb on the captured error, got %#v", errs[0].Breadcrumbs)
+	}
+}
+
+type errTest string
+
+func (e errTest) Error() string { return string(e) }

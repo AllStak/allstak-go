@@ -95,5 +95,9 @@ func captureInbound(client *allstak.Client, c *gin.Context, start time.Time) {
 	if u := allstak.UserFromContext(c.Request.Context()); u != nil {
 		item.UserID = u.ID
 	}
+	// Auto-breadcrumb: record the inbound request on the request-scoped trail
+	// so an error captured during the request carries the entry point. Mirrors
+	// the core net/http middleware.
+	allstak.AddHTTPBreadcrumb(c.Request.Context(), "inbound", item.Method, item.Host, item.Path, item.StatusCode, item.DurationMs)
 	client.CaptureHTTPRequest(item)
 }

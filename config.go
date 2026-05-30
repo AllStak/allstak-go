@@ -40,12 +40,14 @@ type Config struct {
 	Debug bool
 
 	// BeforeSend is an optional hook invoked once per error/message event,
-	// just before it is enqueued to the transport (after the SampleRate gate,
-	// before the PII sanitizer). It receives the fully-enriched ErrorPayload
-	// and may mutate it and return it, or return nil to DROP the event.
+	// just before it is enqueued to the transport (after the SampleRate gate
+	// and after a first PII sanitization pass). It receives the fully-enriched,
+	// sanitized ErrorPayload and may mutate it and return it, or return nil to
+	// DROP the event. The transport sanitizes the returned event again before
+	// persistence/network send, so hooks cannot reintroduce secrets.
 	//
 	// The callback runs on the calling goroutine. It is FAIL-OPEN: if it
-	// panics, the SDK recovers and sends the original (pre-callback) event
+	// panics, the SDK recovers and sends the sanitized pre-callback event
 	// rather than crashing the caller. Keep it fast and side-effect-free.
 	BeforeSend func(event *ErrorPayload) *ErrorPayload
 
@@ -175,7 +177,7 @@ type Config struct {
 	OfflineQueueMaxAge time.Duration
 
 	// SendDefaultPii controls whether commonly-PII free-text values are sent.
-	// It mirrors Sentry's send_default_pii and defaults to FALSE (nil = false):
+	// It defaults to FALSE (nil = false):
 	//
 	//   - When FALSE (the default), the SDK additionally scrubs email addresses
 	//     and IPv4 addresses out of free-text values (error/log/breadcrumb
@@ -188,8 +190,7 @@ type Config struct {
 	// hyphenated US SSNs are ALWAYS scrubbed from free-text values, and the
 	// existing key-name secret redaction (password/token/cookie/etc.) ALWAYS
 	// applies. This flag does NOT affect the explicit User set via WithUser —
-	// user.id/email/ip are intentional identification and ship as before,
-	// matching Sentry.
+	// user.id/email/ip are intentional identification and ship as before.
 	//
 	// Set a pointer to true to enable; leave nil for the secure default.
 	SendDefaultPii *bool
@@ -198,7 +199,7 @@ type Config struct {
 // SDK identity sent on the wire as `sdk.name` / `sdk.version`.
 const (
 	SDKName    = "allstak-go"
-	SDKVersion = "0.3.0"
+	SDKVersion = "0.4.0"
 )
 
 // envFirstNonEmpty returns the first non-empty value of the listed env vars,
@@ -336,7 +337,7 @@ const envSendDefaultPii = "ALLSTAK_SEND_DEFAULT_PII"
 //  1. explicit Config flag (non-nil) — always wins
 //  2. ALLSTAK_SEND_DEFAULT_PII env var ("1"/"true"/"on"/"yes" enables PII
 //     passthrough; "0"/"false"/"off"/"no" forces the secure default)
-//  3. default: FALSE (Sentry parity) — email/IPv4 value scrubbing is ON.
+//  3. default: FALSE — email/IPv4 value scrubbing is ON.
 func resolveSendDefaultPii(flag *bool) bool {
 	if flag != nil {
 		return *flag
