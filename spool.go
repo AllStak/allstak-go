@@ -157,9 +157,9 @@ func newSpool(dir string, maxEntries int, maxBytes int64, maxAge time.Duration, 
 // count/byte bounds by evicting the oldest entries. Fail-open: any error is
 // swallowed (logged in debug) so a full or read-only disk never breaks capture
 // or shutdown. Safe on a nil receiver.
-func (s *spool) persist(path string, body []byte) {
+func (s *spool) persist(path string, body []byte) bool {
 	if s == nil {
-		return
+		return false
 	}
 	env := spoolEnvelope{
 		V:         spoolEnvelopeVersion,
@@ -170,12 +170,12 @@ func (s *spool) persist(path string, body []byte) {
 	data, err := json.Marshal(env)
 	if err != nil {
 		s.debugf("spool marshal failed: %v", err)
-		return
+		return false
 	}
 	// A single envelope larger than the whole budget is pointless to store.
 	if int64(len(data)) > s.maxBytes {
 		s.debugf("spool skip: envelope %d bytes exceeds budget %d", len(data), s.maxBytes)
-		return
+		return false
 	}
 
 	s.mu.Lock()
@@ -184,9 +184,10 @@ func (s *spool) persist(path string, body []byte) {
 	name := s.nextName()
 	if err := s.atomicWrite(name, data); err != nil {
 		s.debugf("spool write failed: %v", err)
-		return
+		return false
 	}
 	s.enforceBoundsLocked()
+	return true
 }
 
 // seq is a process-local monotonic counter appended to the millis timestamp so
@@ -287,7 +288,7 @@ func (s *spool) enforceBoundsLocked() {
 // leave the envelope on disk for a future drain. Stale envelopes past maxAge are
 // dropped without sending. Fail-open and respects ctx cancellation. Safe on a
 // nil receiver.
-func (s *spool) drain(ctx context.Context, t ingestTransport) {
+func (s *spool) drain(ctx context.Context, t ingestTransport, onReplay ...func()) {
 	if s == nil || t == nil {
 		return
 	}
@@ -325,6 +326,11 @@ func (s *spool) drain(ctx context.Context, t ingestTransport) {
 		// (and json.RawMessage is opaque to the scrubber anyway).
 		err = t.send(ctx, env.Path, env.Body)
 		if err == nil {
+			for _, fn := range onReplay {
+				if fn != nil {
+					fn()
+				}
+			}
 			_ = os.Remove(full) // accepted (2xx)
 			continue
 		}

@@ -261,7 +261,11 @@ func (c *Client) enrichFromContext(ctx context.Context, p *ErrorPayload) {
 func NewTraceID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	id := hex.EncodeToString(b[:])
+	if allZeros(id) {
+		return "1" + id[1:]
+	}
+	return id
 }
 
 // NewSpanID returns a 16-character hex span ID (64 bits of entropy).
@@ -270,5 +274,9 @@ func NewTraceID() string {
 func NewSpanID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	id := hex.EncodeToString(b[:])
+	if allZeros(id) {
+		return "1" + id[1:]
+	}
+	return id
 }

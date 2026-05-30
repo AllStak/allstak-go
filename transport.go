@@ -2,6 +2,7 @@ package allstak
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +25,8 @@ const (
 	pathHeartbeat    = "/ingest/v1/heartbeat"
 	pathReleases     = "/ingest/v1/releases"
 )
+
+const compressionThresholdBytes = 1024
 
 // httpTransport is the low-level HTTP ingest transport. It knows how to
 // serialize a payload, attach auth, and retry on transient failures. It
@@ -38,7 +42,12 @@ type httpTransport struct {
 	debug      bool
 	// scrubOpts is the resolved value-scrubbing policy (sendDefaultPii) applied
 	// at the wire chokepoint. Computed once from Config at construction.
-	scrubOpts scrubOptions
+	scrubOpts     scrubOptions
+	retryAttempts atomic.Int64
+	rateLimited   atomic.Int64
+	compressed    atomic.Int64
+	uncompressed  atomic.Int64
+	bytesSaved    atomic.Int64
 }
 
 // newHTTPTransport constructs a transport wired to the given host. A nil
@@ -72,9 +81,16 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 	// rather than dropping the event.
 	payload = scrubPayloadSafe(payload, t.scrubOpts)
 
-	body, err := json.Marshal(payload)
+	rawBody, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("allstak: marshal payload: %w", err)
+	}
+	body, compressed, saved := prepareRequestBody(rawBody)
+	if compressed {
+		t.compressed.Add(1)
+		t.bytesSaved.Add(int64(saved))
+	} else {
+		t.uncompressed.Add(1)
 	}
 
 	url := t.host + path
@@ -90,6 +106,7 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		}
 
 		if attempt > 0 {
+			t.retryAttempts.Add(1)
 			var sleep time.Duration
 			if retryAfter > 0 {
 				// Honor the server's Retry-After hint, clamped to maxRetryAfter.
@@ -119,6 +136,9 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-AllStak-Key", t.apiKey)
 		req.Header.Set("User-Agent", "allstak-go/"+sdkVersion)
+		if compressed {
+			req.Header.Set("Content-Encoding", "gzip")
+		}
 
 		resp, err := t.httpClient.Do(req)
 		if err != nil {
@@ -137,6 +157,9 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return nil
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.rateLimited.Add(1)
 		}
 
 		// 4xx (except 429) is permanent — no point retrying an invalid key
@@ -163,6 +186,37 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		lastErr = fmt.Errorf("allstak: ingest %s exhausted %d retries", path, t.maxRetries)
 	}
 	return lastErr
+}
+
+func (t *httpTransport) diagnostics() transportDiagnostics {
+	return transportDiagnostics{
+		RetryAttempts:    t.retryAttempts.Load(),
+		RateLimitedCount: t.rateLimited.Load(),
+		Compressed:       t.compressed.Load(),
+		Uncompressed:     t.uncompressed.Load(),
+		BytesSaved:       t.bytesSaved.Load(),
+		Disabled:         false,
+	}
+}
+
+func prepareRequestBody(raw []byte) ([]byte, bool, int) {
+	if len(raw) < compressionThresholdBytes {
+		return raw, false, 0
+	}
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	if _, err := writer.Write(raw); err != nil {
+		_ = writer.Close()
+		return raw, false, 0
+	}
+	if err := writer.Close(); err != nil {
+		return raw, false, 0
+	}
+	compressed := buf.Bytes()
+	if len(compressed) >= len(raw) {
+		return raw, false, 0
+	}
+	return compressed, true, len(raw) - len(compressed)
 }
 
 // maxRetryAfter clamps any server-directed Retry-After delay. A hostile or

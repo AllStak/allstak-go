@@ -56,9 +56,13 @@ type Client struct {
 	closed    atomic.Bool
 
 	// Counters exposed via Stats() for observability/tests.
-	sent    atomic.Int64
-	dropped atomic.Int64
-	failed  atomic.Int64
+	captured          atomic.Int64
+	sent              atomic.Int64
+	dropped           atomic.Int64
+	failed            atomic.Int64
+	persisted         atomic.Int64
+	replayed          atomic.Int64
+	sessionRecoveries atomic.Int64
 }
 
 // ingestTransport is the minimal contract the client needs from its
@@ -165,7 +169,7 @@ func newWithTransport(cfg Config, host string, transport ingestTransport) *Clien
 			go func() {
 				defer c.wg.Done()
 				defer func() { _ = recover() }() // never let a drain crash boot
-				c.spool.drain(c.ctx, c.transport)
+				c.spool.drain(c.ctx, c.transport, func() { c.replayed.Add(1) })
 			}()
 		}
 	}
@@ -220,17 +224,50 @@ func (c *Client) Host() string { return c.host }
 // Stats returns a snapshot of the internal counters. Useful for tests and
 // for end-of-run summaries in scripts.
 type Stats struct {
-	Sent    int64
-	Dropped int64
-	Failed  int64
+	Sent      int64
+	Dropped   int64
+	Failed    int64
+	Captured  int64
+	Persisted int64
+	Replayed  int64
 }
 
 // Stats returns a point-in-time copy of the SDK's send counters.
 func (c *Client) Stats() Stats {
 	return Stats{
-		Sent:    c.sent.Load(),
-		Dropped: c.dropped.Load(),
-		Failed:  c.failed.Load(),
+		Sent:      c.sent.Load(),
+		Dropped:   c.dropped.Load(),
+		Failed:    c.failed.Load(),
+		Captured:  c.captured.Load(),
+		Persisted: c.persisted.Load(),
+		Replayed:  c.replayed.Load(),
+	}
+}
+
+// GetDiagnostics returns privacy-safe SDK counters and queue sizes.
+func (c *Client) GetDiagnostics() Diagnostics {
+	var td transportDiagnostics
+	if d, ok := c.transport.(diagnosticTransport); ok {
+		td = d.diagnostics()
+	}
+	return Diagnostics{
+		EventsCaptured:        c.captured.Load(),
+		EventsSent:            c.sent.Load(),
+		EventsFailed:          c.failed.Load(),
+		EventsDropped:         c.dropped.Load(),
+		EventsPersisted:       c.persisted.Load(),
+		EventsReplayed:        c.replayed.Load(),
+		QueueSize:             len(c.errs) + len(c.logs) + len(c.requests) + len(c.dbq) + len(c.spans) + c.spool.count(),
+		RetryAttempts:         td.RetryAttempts,
+		RateLimitedCount:      td.RateLimitedCount,
+		CompressedPayloads:    td.Compressed,
+		UncompressedPayloads:  td.Uncompressed,
+		CompressionBytesSaved: td.BytesSaved,
+		ActiveTraceCount:      0,
+		ActiveSpanCount:       0,
+		BreadcrumbCount:       0,
+		SessionRecoveryCount:  c.sessionRecoveries.Load(),
+		Disabled:              c.closed.Load() || td.Disabled,
 	}
 }
 
@@ -267,6 +304,7 @@ func (c *Client) CaptureError(p ErrorPayload) {
 	if c.closed.Load() {
 		return
 	}
+	c.captured.Add(1)
 	// Stamp env/release if caller left them blank so integrations can be
 	// dumb and still get correctly-tagged events.
 	if p.Environment == "" {
@@ -334,6 +372,7 @@ func (c *Client) CaptureLog(p LogPayload) {
 	if c.closed.Load() {
 		return
 	}
+	c.captured.Add(1)
 	if p.Environment == "" {
 		p.Environment = c.cfg.Environment
 	}
@@ -363,6 +402,7 @@ func (c *Client) CaptureHTTPRequest(p HTTPRequestItem) {
 	if c.closed.Load() {
 		return
 	}
+	c.captured.Add(1)
 	if p.Environment == "" {
 		p.Environment = c.cfg.Environment
 	}
@@ -395,6 +435,7 @@ func (c *Client) CaptureDBQuery(p DBQueryItem) {
 	if c.closed.Load() {
 		return
 	}
+	c.captured.Add(1)
 	if p.Environment == "" {
 		p.Environment = c.cfg.Environment
 	}
@@ -426,6 +467,7 @@ func (c *Client) CaptureSpan(p SpanItem) {
 	if c.closed.Load() {
 		return
 	}
+	c.captured.Add(1)
 	if p.Environment == "" {
 		p.Environment = c.cfg.Environment
 	}
@@ -457,6 +499,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, p HeartbeatPayload) error {
 	if c.closed.Load() {
 		return errors.New("allstak: client closed")
 	}
+	c.captured.Add(1)
 	if p.Status == "" {
 		p.Status = "success"
 	}
@@ -534,21 +577,25 @@ func (c *Client) Close(ctx context.Context) error {
 // The payload is run through the PII sanitizer again here before it is written,
 // so secrets/unredacted data NEVER hit disk even though the transport already
 // scrubs on the wire. Scrubbing is idempotent, so the double-scrub is harmless.
-func (c *Client) persistOnFailure(path string, payload any, sendErr error) {
+func (c *Client) persistOnFailure(path string, payload any, sendErr error, eventCount int64) bool {
 	if c.spool == nil || !shouldSpoolPath(path) {
-		return
+		return false
 	}
 	if isPermanentSendError(sendErr) {
 		// 4xx (non-429): the backend rejected it; persisting would just replay a
 		// guaranteed rejection. Drop it (already counted as failed).
-		return
+		return false
 	}
 	body, err := marshalScrubbed(payload, c.cfg.scrubOptions())
 	if err != nil {
 		c.debugf("spool persist marshal failed for %s: %v", path, err)
-		return
+		return false
 	}
-	c.spool.persist(path, body)
+	if c.spool.persist(path, body) {
+		c.persisted.Add(eventCount)
+		return true
+	}
+	return false
 }
 
 func (c *Client) debugf(format string, args ...any) {

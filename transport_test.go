@@ -1,7 +1,13 @@
 package allstak
 
 import (
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,5 +49,75 @@ func TestParseRetryAfterWhitespace(t *testing.T) {
 	now := time.Now()
 	if got := parseRetryAfter("  5  ", now); got != 5*time.Second {
 		t.Errorf("parseRetryAfter with whitespace = %v, want 5s", got)
+	}
+}
+
+func TestHTTPTransportCompressionTinyPayload(t *testing.T) {
+	var gotEncoding string
+	var gotPayload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Content-Encoding")
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotPayload); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	transport := newHTTPTransport(srv.URL, "ask_test", time.Second, 0, false, scrubOptions{scrubValues: true})
+	if err := transport.send(context.Background(), pathLogs, map[string]any{"message": "hi"}); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+	if gotEncoding != "" {
+		t.Fatalf("Content-Encoding = %q, want empty", gotEncoding)
+	}
+	if gotPayload["message"] != "hi" {
+		t.Fatalf("payload message = %v, want hi", gotPayload["message"])
+	}
+	diag := transport.diagnostics()
+	if diag.Uncompressed != 1 || diag.Compressed != 0 || diag.BytesSaved != 0 {
+		t.Fatalf("diagnostics = %+v, want one uncompressed payload", diag)
+	}
+}
+
+func TestHTTPTransportCompressionLargePayload(t *testing.T) {
+	var gotEncoding string
+	var gotPayload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Content-Encoding")
+		reader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatalf("gzip reader: %v", err)
+		}
+		defer reader.Close()
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("read gzip body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotPayload); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	message := strings.Repeat("x", 8000)
+	transport := newHTTPTransport(srv.URL, "ask_test", time.Second, 0, false, scrubOptions{scrubValues: true})
+	if err := transport.send(context.Background(), pathErrors, map[string]any{"message": message}); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+	if gotEncoding != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", gotEncoding)
+	}
+	if gotPayload["message"] != message {
+		t.Fatalf("payload message mismatch")
+	}
+	diag := transport.diagnostics()
+	if diag.Compressed != 1 || diag.Uncompressed != 0 || diag.BytesSaved <= 0 {
+		t.Fatalf("diagnostics = %+v, want one compressed payload", diag)
 	}
 }

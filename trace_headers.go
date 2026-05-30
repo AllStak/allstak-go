@@ -3,6 +3,7 @@ package allstak
 import (
 	"net/http"
 	"strings"
+	"unicode"
 )
 
 // TraceHeaders carries inbound distributed-tracing identifiers resolved
@@ -23,10 +24,10 @@ func TraceHeadersFromRequest(r *http.Request) TraceHeaders {
 		RequestID:    firstHeader(r, "X-Request-Id", "X-AllStak-Request-Id"),
 	}
 	if h.TraceID == "" {
-		h.TraceID = firstHeader(r, "X-AllStak-Trace-Id", "X-Trace-Id")
+		h.TraceID = firstValidTraceHeader(r, "X-AllStak-Trace-Id", "X-Trace-Id")
 	}
-	if h.ParentSpanID == "" {
-		h.ParentSpanID = firstHeader(r, "X-AllStak-Span-Id", "X-Span-Id")
+	if h.ParentSpanID == "" && h.TraceID != "" {
+		h.ParentSpanID = firstValidSpanHeader(r, "X-AllStak-Span-Id", "X-Span-Id")
 	}
 	if h.TraceID == "" {
 		h.TraceID = NewTraceID()
@@ -48,18 +49,110 @@ func firstHeader(r *http.Request, names ...string) string {
 
 func traceIDFromTraceparent(header string) string {
 	parts := strings.Split(strings.TrimSpace(header), "-")
-	if len(parts) >= 2 && len(parts[1]) == 32 {
-		return parts[1]
+	if len(parts) == 4 && parts[0] == "00" && isHex(parts[3]) && len(parts[3]) == 2 {
+		traceID := strings.ToLower(parts[1])
+		if isValidTraceID(traceID) {
+			return traceID
+		}
 	}
 	return ""
 }
 
 func parentSpanIDFromTraceparent(header string) string {
 	parts := strings.Split(strings.TrimSpace(header), "-")
-	if len(parts) >= 3 && len(parts[2]) == 16 {
-		return parts[2]
+	if len(parts) == 4 && parts[0] == "00" && isHex(parts[3]) && len(parts[3]) == 2 {
+		spanID := strings.ToLower(parts[2])
+		if isValidSpanID(spanID) {
+			return spanID
+		}
 	}
 	return ""
+}
+
+func firstValidTraceHeader(r *http.Request, names ...string) string {
+	for _, name := range names {
+		value := strings.ToLower(strings.TrimSpace(r.Header.Get(name)))
+		if isValidTraceID(value) {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstValidSpanHeader(r *http.Request, names ...string) string {
+	for _, name := range names {
+		value := strings.ToLower(strings.TrimSpace(r.Header.Get(name)))
+		if isValidSpanID(value) {
+			return value
+		}
+	}
+	return ""
+}
+
+func isValidTraceID(value string) bool {
+	return len(value) == 32 && isHex(value) && !allZeros(value)
+}
+
+func isValidSpanID(value string) bool {
+	return len(value) == 16 && isHex(value) && !allZeros(value)
+}
+
+func isHex(value string) bool {
+	for _, r := range value {
+		if !unicode.Is(unicode.ASCII_Hex_Digit, r) {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func allZeros(value string) bool {
+	for _, r := range value {
+		if r != '0' {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func normalizeTraceID(traceID string) string {
+	hex := hexOnly(traceID)
+	var candidate string
+	switch {
+	case len(hex) >= 32:
+		candidate = hex[:32]
+	case len(hex) > 0:
+		candidate = hex + strings.Repeat("0", 32-len(hex))
+	}
+	if isValidTraceID(candidate) {
+		return candidate
+	}
+	return NewTraceID()
+}
+
+func normalizeSpanID(spanID string) string {
+	hex := hexOnly(spanID)
+	var candidate string
+	switch {
+	case len(hex) >= 16:
+		candidate = hex[:16]
+	case len(hex) > 0:
+		candidate = hex + strings.Repeat("0", 16-len(hex))
+	}
+	if isValidSpanID(candidate) {
+		return candidate
+	}
+	return NewSpanID()
+}
+
+func hexOnly(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(value) {
+		if unicode.Is(unicode.ASCII_Hex_Digit, r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // AllStakBaggage returns the SDK-owned W3C baggage members for correlation.
@@ -106,7 +199,7 @@ func traceparentFlags(sampled bool) string {
 // formatTraceparent builds a W3C `traceparent` value with the given sampled
 // flag. version is fixed at "00".
 func formatTraceparent(traceID, spanID string, sampled bool) string {
-	return "00-" + traceID + "-" + spanID + "-" + traceparentFlags(sampled)
+	return "00-" + normalizeTraceID(traceID) + "-" + normalizeSpanID(spanID) + "-" + traceparentFlags(sampled)
 }
 
 // SetTraceResponseHeaders stamps correlation headers onto an HTTP response.
@@ -120,16 +213,21 @@ func SetTraceResponseHeaders(h http.Header, traceID, requestID, spanID string) {
 // sampled decision controlling the traceparent trace-flags ("-01" sampled,
 // "-00" not sampled).
 func SetTraceResponseHeadersSampled(h http.Header, traceID, requestID, spanID string, sampled bool) {
-	h.Set("X-AllStak-Trace-Id", traceID)
+	wireTraceID := normalizeTraceID(traceID)
+	wireSpanID := ""
+	if spanID != "" {
+		wireSpanID = normalizeSpanID(spanID)
+	}
+	h.Set("X-AllStak-Trace-Id", wireTraceID)
 	if requestID != "" {
 		h.Set("X-AllStak-Request-Id", requestID)
 	}
-	if spanID != "" {
-		h.Set("X-AllStak-Span-Id", spanID)
-		h.Set("traceparent", formatTraceparent(traceID, spanID, sampled))
+	if wireSpanID != "" {
+		h.Set("X-AllStak-Span-Id", wireSpanID)
+		h.Set("traceparent", formatTraceparent(wireTraceID, wireSpanID, sampled))
 	}
-	h.Set("baggage", MergeBaggage(h.Get("baggage"), traceID, requestID, spanID))
-	h.Set("AllStak-Baggage", AllStakBaggage(traceID, requestID, spanID))
+	h.Set("baggage", MergeBaggage(h.Get("baggage"), wireTraceID, requestID, wireSpanID))
+	h.Set("AllStak-Baggage", AllStakBaggage(wireTraceID, requestID, wireSpanID))
 }
 
 // SetTraceRequestHeaders stamps correlation headers onto an outbound request.
@@ -147,14 +245,19 @@ func SetTraceRequestHeaders(r *http.Request, traceID, requestID, spanID string) 
 // SetTraceRequestHeadersSampled is SetTraceRequestHeaders with an explicit
 // sampled decision controlling the traceparent trace-flags.
 func SetTraceRequestHeadersSampled(r *http.Request, traceID, requestID, spanID string, sampled bool) {
-	r.Header.Set("X-AllStak-Trace-Id", traceID)
+	wireTraceID := normalizeTraceID(traceID)
+	wireSpanID := ""
+	if spanID != "" {
+		wireSpanID = normalizeSpanID(spanID)
+	}
+	r.Header.Set("X-AllStak-Trace-Id", wireTraceID)
 	if requestID != "" {
 		r.Header.Set("X-AllStak-Request-Id", requestID)
 	}
-	if spanID != "" {
-		r.Header.Set("X-AllStak-Span-Id", spanID)
-		r.Header.Set("traceparent", formatTraceparent(traceID, spanID, sampled))
+	if wireSpanID != "" {
+		r.Header.Set("X-AllStak-Span-Id", wireSpanID)
+		r.Header.Set("traceparent", formatTraceparent(wireTraceID, wireSpanID, sampled))
 	}
-	r.Header.Set("baggage", MergeBaggage(r.Header.Get("baggage"), traceID, requestID, spanID))
-	r.Header.Set("AllStak-Baggage", AllStakBaggage(traceID, requestID, spanID))
+	r.Header.Set("baggage", MergeBaggage(r.Header.Get("baggage"), wireTraceID, requestID, wireSpanID))
+	r.Header.Set("AllStak-Baggage", AllStakBaggage(wireTraceID, requestID, wireSpanID))
 }

@@ -406,6 +406,7 @@ func (c *Client) recoverPreviousSession() {
 	st.RecoveredAtUnixMs = st.EndedAtUnixMs
 	st.RecoveryLockUntil = 0
 	c.writeSessionState(st)
+	c.sessionRecoveries.Add(1)
 }
 
 func (c *Client) updateOpenSessionState(s *session) {

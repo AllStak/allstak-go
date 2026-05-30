@@ -210,3 +210,11 @@ func Close(ctx context.Context) error {
 	defaultClient.Store(nil)
 	return c.Close(ctx)
 }
+
+// GetDiagnostics returns privacy-safe counters for the default client.
+func GetDiagnostics() Diagnostics {
+	if c := Default(); c != nil {
+		return c.GetDiagnostics()
+	}
+	return Diagnostics{}
+}
