@@ -115,7 +115,7 @@ func Go(fn func()) {
 		return
 	}
 	if c := Default(); c != nil {
-		c.SafeGo(nil, fn)
+		c.SafeGo(context.Background(), fn)
 		return
 	}
 	// No client yet — still guard so the re-panic behavior is identical to the

@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-06-06
+
+### Fixed
+
+- Replaced the package-level goroutine helper's nil context handoff with
+  `context.Background()` so the release branch passes staticcheck while
+  preserving the public helper behavior.
+
 ## [0.4.1] — 2026-06-06
 
 ### Fixed
