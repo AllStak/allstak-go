@@ -215,8 +215,13 @@ func (c *Client) enrichFromContext(ctx context.Context, p *ErrorPayload) {
 			UserAgent: ri.UserAgent,
 		}
 	}
-	if tid, _ := TraceFromContext(ctx); tid != "" {
-		p.TraceID = tid
+	if sc := SpanFromContext(ctx); sc != nil {
+		p.TraceID = sc.TraceID
+		p.SpanID = sc.SpanID
+		p.ParentSpanID = sc.ParentSpanID
+	}
+	if rid := RequestIDFromContext(ctx); rid != "" {
+		p.RequestID = rid
 	}
 	// Attach the request-scoped breadcrumb trail so a captured error carries
 	// the http/db/log activity that led up to it. Caller-supplied crumbs win:

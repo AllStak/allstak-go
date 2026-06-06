@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-06-06
+
+### Fixed
+
+- Propagated request-scoped `spanId`, `parentSpanId`, and `requestId` into
+  captured errors instead of only copying the trace id.
+- Added top-level `mechanism` and `handled` fields for captured exceptions,
+  messages, and panics so backend grouping and handled/unhandled classification
+  are consistent.
+
 ## [0.4.0] — 2026-05-30
 
 ### Added

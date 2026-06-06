@@ -27,6 +27,8 @@ func (c *Client) CaptureException(ctx context.Context, err error) {
 		StackTrace:     captureStack(1),
 		Frames:         captureStructuredFrames(1),
 		Level:          "error",
+		Mechanism:      "captureException",
+		Handled:        handledPtr(true),
 	}
 	c.enrichFromContext(ctx, &p)
 	c.CaptureError(p)
@@ -45,6 +47,8 @@ func (c *Client) CaptureExceptionWithLevel(ctx context.Context, err error, level
 		StackTrace:     captureStack(1),
 		Frames:         captureStructuredFrames(1),
 		Level:          level,
+		Mechanism:      "captureException",
+		Handled:        handledPtr(true),
 	}
 	c.enrichFromContext(ctx, &p)
 	c.CaptureError(p)
@@ -64,6 +68,8 @@ func (c *Client) CaptureMessage(ctx context.Context, level, message string) {
 		ExceptionClass: "Message",
 		Message:        message,
 		Level:          level,
+		Mechanism:      "captureMessage",
+		Handled:        handledPtr(true),
 	}
 	c.enrichFromContext(ctx, &p)
 	c.CaptureError(p)
@@ -136,6 +142,8 @@ func (c *Client) capturePanic(ctx context.Context, r any) {
 		Message:        err.Error(),
 		StackTrace:     stack,
 		Level:          "fatal",
+		Mechanism:      "panic",
+		Handled:        handledPtr(false),
 	}
 	c.enrichFromContext(ctx, &p)
 	c.CaptureError(p)
@@ -158,6 +166,10 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+}
+
+func handledPtr(v bool) *bool {
+	return &v
 }
 
 // ── Log helpers ───────────────────────────────────────────────────────────

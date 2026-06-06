@@ -86,6 +86,47 @@ func TestCaptureErrorStampsDefaultsAndReleaseTags(t *testing.T) {
 	}
 }
 
+func TestCaptureExceptionPromotesRequestCorrelationAndMechanism(t *testing.T) {
+	rt := &recordingTransport{}
+	client := newWithTransport(Config{
+		Environment:   "dev-sdk-audit",
+		Release:       "go-test",
+		FlushInterval: time.Hour,
+		QueueCapacity: 10,
+		BatchSize:     10,
+	}, INGEST_HOST, rt)
+	defer client.Close(context.Background())
+
+	ctx := WithContextSpan(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc")
+	ctx = WithRequestID(ctx, "req-go-1")
+
+	client.CaptureException(ctx, errTest("correlated"))
+
+	sends := rt.waitFor(t, 1)
+	payload, ok := sends[0].payload.(*ErrorPayload)
+	if !ok {
+		t.Fatalf("payload type = %T, want *ErrorPayload", sends[0].payload)
+	}
+	if payload.TraceID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("traceId = %q", payload.TraceID)
+	}
+	if payload.SpanID != "bbbbbbbbbbbbbbbb" {
+		t.Fatalf("spanId = %q", payload.SpanID)
+	}
+	if payload.ParentSpanID != "cccccccccccccccc" {
+		t.Fatalf("parentSpanId = %q", payload.ParentSpanID)
+	}
+	if payload.RequestID != "req-go-1" {
+		t.Fatalf("requestId = %q", payload.RequestID)
+	}
+	if payload.Mechanism != "captureException" {
+		t.Fatalf("mechanism = %q", payload.Mechanism)
+	}
+	if payload.Handled == nil || !*payload.Handled {
+		t.Fatalf("handled = %v, want true", payload.Handled)
+	}
+}
+
 func TestCaptureLogAndHeartbeatUseExpectedIngestPaths(t *testing.T) {
 	rt := &recordingTransport{}
 	client := newWithTransport(Config{

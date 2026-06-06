@@ -19,14 +19,19 @@ type ErrorPayload struct {
 	User           *UserContext   `json:"user,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 	TraceID        string         `json:"traceId,omitempty"`
+	SpanID         string         `json:"spanId,omitempty"`
+	ParentSpanID   string         `json:"parentSpanId,omitempty"`
+	RequestID      string         `json:"requestId,omitempty"`
 	RequestContext *ReqContext    `json:"requestContext,omitempty"`
 	Breadcrumbs    []Breadcrumb   `json:"breadcrumbs,omitempty"`
+	Mechanism      string         `json:"mechanism,omitempty"`
+	Handled        *bool          `json:"handled,omitempty"`
 	// Phase 2 — v2 ingest contract.
-	SDKName     string  `json:"sdkName,omitempty"`
-	SDKVersion  string  `json:"sdkVersion,omitempty"`
-	Platform    string  `json:"platform,omitempty"`
-	Dist        string  `json:"dist,omitempty"`
-	Frames      []Frame `json:"frames,omitempty"`
+	SDKName    string  `json:"sdkName,omitempty"`
+	SDKVersion string  `json:"sdkVersion,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Dist       string  `json:"dist,omitempty"`
+	Frames     []Frame `json:"frames,omitempty"`
 }
 
 // Frame mirrors the backend ErrorIngestRequest.Frame. Populated from
@@ -118,7 +123,7 @@ type HTTPRequestItem struct {
 	Release          string `json:"release,omitempty"`
 	// Release-tracking metadata. Backend stores the rest inside metadata
 	// today; once dedicated columns land, the ingester reads them out.
-	Metadata         map[string]any `json:"metadata,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // ── Database queries ──────────────────────────────────────────────────────
