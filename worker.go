@@ -16,20 +16,33 @@ import (
 func runSingleWorker[T any](c *Client, ch <-chan *T, path string) {
 	defer c.wg.Done()
 	for item := range ch {
-		ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RequestTimeout*2)
-		if err := c.transport.send(ctx, path, item); err != nil {
-			c.failed.Add(1)
-			c.debugf("send %s failed: %v", path, err)
-			// Outage/restart durability: persist the scrubbed payload so the
-			// next init can replay it. Permanent (4xx) failures are not worth
-			// keeping — drop them. Fail-open.
-			if !c.persistOnFailure(path, item, err, 1) {
-				c.dropped.Add(1)
+		// Per-item panic guard: a panicking transport/persist path must never
+		// kill the worker goroutine (an unrecovered goroutine panic crashes
+		// the whole host process). The item is counted failed+dropped and the
+		// worker keeps draining.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.failed.Add(1)
+					c.dropped.Add(1)
+					c.debugf("worker panic suppressed on %s: %v", path, r)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RequestTimeout*2)
+			defer cancel()
+			if err := c.transport.send(ctx, path, item); err != nil {
+				c.failed.Add(1)
+				c.debugf("send %s failed: %v", path, err)
+				// Outage/restart durability: persist the scrubbed payload so the
+				// next init can replay it. Permanent (4xx) failures are not worth
+				// keeping — drop them. Fail-open.
+				if !c.persistOnFailure(path, item, err, 1) {
+					c.dropped.Add(1)
+				}
+			} else {
+				c.sent.Add(1)
 			}
-		} else {
-			c.sent.Add(1)
-		}
-		cancel()
+		}()
 	}
 }
 
@@ -56,6 +69,17 @@ func runBatchWorker[T any](c *Client, ch <-chan *T, path string, wrap func([]*T)
 		snapshot := make([]*T, len(batch))
 		copy(snapshot, batch)
 		batch = batch[:0]
+
+		// Panic guard: a panicking transport/persist path must never kill the
+		// worker goroutine (an unrecovered goroutine panic crashes the whole
+		// host process). The batch is counted failed+dropped instead.
+		defer func() {
+			if r := recover(); r != nil {
+				c.failed.Add(int64(len(snapshot)))
+				c.dropped.Add(int64(len(snapshot)))
+				c.debugf("batch worker panic suppressed on %s: %v", path, r)
+			}
+		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RequestTimeout*2)
 		defer cancel()

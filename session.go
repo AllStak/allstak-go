@@ -343,6 +343,9 @@ func (c *Client) endSession() {
 }
 
 func (c *Client) recoverPreviousSession() {
+	// Runs synchronously during client construction — a panic here would
+	// crash the host at init. Fail-open instead.
+	defer func() { _ = recover() }()
 	if c.session == nil {
 		return
 	}
@@ -426,6 +429,11 @@ func (c *Client) readSessionState() (persistedSessionState, bool) {
 	if c.session == nil || c.session.statePath == "" {
 		return persistedSessionState{}, false
 	}
+	// Refuse a symlinked state file: on a shared host an attacker could plant
+	// a symlink at the (predictable) path to leak or feed us another file.
+	if fi, err := os.Lstat(c.session.statePath); err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return persistedSessionState{}, false
+	}
 	data, err := os.ReadFile(c.session.statePath)
 	if err != nil {
 		return persistedSessionState{}, false
@@ -443,19 +451,34 @@ func (c *Client) writeSessionState(st persistedSessionState) {
 		return
 	}
 	defer func() { _ = recover() }()
-	if err := os.MkdirAll(filepath.Dir(c.session.statePath), 0o700); err != nil {
+	// Hardened dir creation: 0700, refuse symlinked or foreign-owned dirs.
+	// Fail-open — a refused dir just skips persistence for this write.
+	if err := ensureSecureDir(filepath.Dir(c.session.statePath)); err != nil {
 		return
 	}
 	data, err := json.Marshal(st)
 	if err != nil {
 		return
 	}
-	tmp := c.session.statePath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// Random temp name via CreateTemp (O_CREATE|O_EXCL, 0600): a fixed
+	// "<path>.tmp" name is predictable and os.WriteFile would follow a
+	// pre-planted symlink there — an arbitrary-file overwrite primitive.
+	tmp, err := os.CreateTemp(filepath.Dir(c.session.statePath), sessionStateFilePrefix+"*.tmp")
+	if err != nil {
 		return
 	}
-	if err := os.Rename(tmp, c.session.statePath); err != nil {
-		_ = os.Remove(tmp)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := os.Rename(tmpName, c.session.statePath); err != nil {
+		_ = os.Remove(tmpName)
 	}
 }
 
@@ -473,13 +496,22 @@ func validSessionState(st persistedSessionState) bool {
 	return st.Status == statusOK || st.Status == statusErrored || st.Status == statusCrashed || st.Status == statusAbnormal
 }
 
+// sessionStatePath resolves where the crash-recovery session state lives.
+// Explicit OfflineQueueDir wins; otherwise the per-user cache dir is
+// preferred, and the world-tmp last resort embeds the uid
+// (allstak-session-state-<uid>) so the path is per-user instead of a fixed,
+// squattable world-tmp name.
 func sessionStatePath(cfg Config) string {
 	if strings.HasSuffix(os.Args[0], ".test") && cfg.OfflineQueueDir == "" {
 		return ""
 	}
 	base := cfg.OfflineQueueDir
 	if base == "" {
-		base = filepath.Join(os.TempDir(), sessionStateDirectory)
+		if cache, err := os.UserCacheDir(); err == nil && cache != "" {
+			base = filepath.Join(cache, sessionStateDirectory)
+		} else {
+			base = filepath.Join(os.TempDir(), sessionStateDirectory+uidSuffix())
+		}
 	}
 	sum := sha256.Sum256([]byte(cfg.APIKey + "|" + cfg.Release + "|" + cfg.Environment))
 	return filepath.Join(base, sessionStateFilePrefix+hex.EncodeToString(sum[:8])+sessionStateFileSuffix)

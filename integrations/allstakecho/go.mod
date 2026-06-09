@@ -3,7 +3,7 @@ module github.com/AllStak/allstak-go/integrations/allstakecho
 go 1.23.4
 
 require (
-	github.com/AllStak/allstak-go v0.0.0
+	github.com/AllStak/allstak-go v0.4.2
 	github.com/labstack/echo/v4 v4.12.0
 )
 
@@ -18,5 +18,3 @@ require (
 	golang.org/x/sys v0.19.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
-
-replace github.com/AllStak/allstak-go => ../..

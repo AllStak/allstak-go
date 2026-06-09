@@ -1,8 +1,12 @@
 package allstak
 
 import (
+	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -176,6 +180,31 @@ type Config struct {
 	// usually noise). Zero uses the default (48h).
 	OfflineQueueMaxAge time.Duration
 
+	// AllowInsecureHost permits a plaintext (non-loopback) http:// ingest host.
+	// By default the SDK REJECTS any http:// host that is not loopback
+	// (localhost / 127.0.0.1 / ::1 / 0.0.0.0 / *.localhost): a plaintext host
+	// would ship the API key and all telemetry in cleartext. Init returns a
+	// descriptive error for such hosts; New logs the error and degrades to a
+	// disabled no-op client.
+	//
+	// Set true (or ALLSTAK_ALLOW_INSECURE_HOST=1 in the environment) only for
+	// trusted internal networks — a loud one-time warning is emitted to stderr
+	// when an insecure host is actually used.
+	AllowInsecureHost bool
+
+	// DisableGitDetection disables the `git describe` shell-out fallback of
+	// automatic release detection. The primary detection path — the VCS info
+	// the Go toolchain stamps at build time — does not execute anything and is
+	// unaffected. Set true in hardened/production environments where a network
+	// service exec()ing a binary from $PATH at startup is unacceptable.
+	//
+	// Independent of this flag, the git fallback is skipped automatically when
+	// the release is already known (explicit Release or a release env var) and
+	// when the process appears to run inside a container (/.dockerenv,
+	// /run/.containerenv, or KUBERNETES_SERVICE_HOST), where a git working
+	// tree is not meaningful.
+	DisableGitDetection bool
+
 	// SendDefaultPii controls whether commonly-PII free-text values are sent.
 	// It defaults to FALSE (nil = false):
 	//
@@ -288,7 +317,15 @@ func (c Config) applyDefaults() Config {
 		c.Release = envFirstNonEmpty("ALLSTAK_RELEASE", "VERCEL_GIT_COMMIT_SHA", "RAILWAY_GIT_COMMIT_SHA", "RENDER_GIT_COMMIT")
 	}
 	if c.Release == "" && (c.AutoDetectRelease == nil || *c.AutoDetectRelease) {
-		if rel := resolveAutoRelease(readBuildVCSInfo, defaultGitRunner); rel != "" {
+		// The `git describe` exec fallback only runs when it is not disabled
+		// and we are not in a container; the exec-free build-info path always
+		// runs. The release-env-var-absent condition is already guaranteed by
+		// the preceding `c.Release == ""` guards.
+		runner := defaultGitRunner
+		if c.DisableGitDetection || runningInContainer() {
+			runner = nil
+		}
+		if rel := resolveAutoRelease(readBuildVCSInfo, runner); rel != "" {
 			c.Release = rel
 		} else {
 			c.Release = c.SDKVersion
@@ -371,6 +408,95 @@ func resolveHost() string {
 		return strings.TrimRight(v, "/")
 	}
 	return strings.TrimRight(INGEST_HOST, "/")
+}
+
+// envAllowInsecureHost lets deployments allow a plaintext http:// ingest host
+// without a code change. The Config flag and the env var are OR-ed: either
+// enables the escape hatch.
+const envAllowInsecureHost = "ALLSTAK_ALLOW_INSECURE_HOST"
+
+// resolveAllowInsecureHost reports whether plaintext non-loopback http hosts
+// are permitted: true when the Config flag is set OR the
+// ALLSTAK_ALLOW_INSECURE_HOST env var is truthy.
+func resolveAllowInsecureHost(flag bool) bool {
+	return flag || envTruthy(os.Getenv(envAllowInsecureHost))
+}
+
+// insecureHostWarned makes the loud insecure-host warning one-time per
+// process. It is an atomic.Bool (not sync.Once) so tests can reset it.
+var insecureHostWarned atomic.Bool
+
+// validateIngestHost enforces the transport-security policy on the effective
+// ingest host:
+//
+//   - https:// — always allowed.
+//   - http://  — allowed ONLY for loopback hosts (localhost, 127.0.0.1, ::1,
+//     [::1], 0.0.0.0, *.localhost), OR when allowInsecure is set, in which
+//     case a LOUD one-time warning is written to stderr because the API key
+//     and all telemetry travel in cleartext.
+//   - anything else (no scheme, other schemes, unparseable) — rejected.
+//
+// It returns nil when the host is acceptable and a descriptive error
+// otherwise. Init surfaces that error; New degrades to a disabled no-op
+// client instead.
+func validateIngestHost(host string, allowInsecure bool) error {
+	u, err := url.Parse(host)
+	if err != nil {
+		return fmt.Errorf("AllStak: invalid ingest host %q: %v", host, err)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		if allowInsecure {
+			if insecureHostWarned.CompareAndSwap(false, true) {
+				fmt.Fprintf(os.Stderr,
+					"[allstak] WARNING: insecure ingest host %q allowed by AllowInsecureHost — "+
+						"the API key and all telemetry are sent in CLEARTEXT. "+
+						"Use https:// for anything but trusted internal networks.\n", host)
+			}
+			return nil
+		}
+		return fmt.Errorf("AllStak: insecure ingest host '%s' rejected. Use https:// (or set AllowInsecureHost: true for trusted internal networks)", host)
+	default:
+		return fmt.Errorf("AllStak: insecure ingest host '%s' rejected. Use https:// (or set AllowInsecureHost: true for trusted internal networks)", host)
+	}
+}
+
+// isLoopbackHost reports whether hostname (no port, brackets already stripped
+// by url.Hostname) refers to the local machine: localhost, *.localhost,
+// 0.0.0.0, or a literal loopback IP (127.0.0.0/8, ::1).
+func isLoopbackHost(hostname string) bool {
+	h := strings.ToLower(strings.TrimSpace(hostname))
+	if h == "" {
+		return false
+	}
+	if h == "localhost" || h == "0.0.0.0" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// runningInContainer reports whether the process appears to run inside a
+// container (Docker, Podman, or Kubernetes). Used to skip the `git describe`
+// release-detection fallback — container images don't carry a usable git
+// working tree, and exec()ing from $PATH inside one is pure attack surface.
+func runningInContainer() bool {
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return true
+	}
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(marker); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultServiceName returns the basename of os.Args[0] or "go-service" as a

@@ -3,7 +3,7 @@ module github.com/AllStak/allstak-go/integrations/allstakgin
 go 1.23.4
 
 require (
-	github.com/AllStak/allstak-go v0.0.0
+	github.com/AllStak/allstak-go v0.4.2
 	github.com/gin-gonic/gin v1.10.0
 )
 
@@ -35,5 +35,3 @@ require (
 	google.golang.org/protobuf v1.34.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/AllStak/allstak-go => ../..

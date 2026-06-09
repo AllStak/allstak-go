@@ -1,6 +1,7 @@
 package allstak
 
 import (
+	"encoding"
 	"encoding/json"
 	"reflect"
 	"regexp"
@@ -268,8 +269,142 @@ func scrubValue(value any, depth int, seen map[uintptr]struct{}, opts scrubOptio
 		}
 		return out
 
+	case []string:
+		out := make([]string, len(v))
+		for i, child := range v {
+			out[i] = scrubString(child, opts)
+		}
+		return out
+
 	case string:
 		return scrubString(v, opts)
+
+	case error:
+		// An error dropped into Metadata/Data would marshal to "{}" (no
+		// exported fields) — useless AND a scrub bypass if it has a custom
+		// MarshalJSON. Replace it with its scrubbed message.
+		if v == nil {
+			return value
+		}
+		return scrubString(v.Error(), opts)
+
+	default:
+		// Other container shapes (typed maps/slices, structs, pointers) are
+		// walked with a bounded reflection fallback so PII can't ride through
+		// inside e.g. a map[string]string-alias or a struct field.
+		// Non-container primitives pass through unchanged.
+		return scrubReflect(value, depth, seen, opts)
+	}
+}
+
+// scrubReflect is the reflection-lite fallback for container shapes the fast
+// type switch in scrubValue does not handle: typed maps with string keys,
+// typed slices/arrays, structs, and pointers to any of those. It mirrors what
+// encoding/json would emit (struct fields use their json tag names) so the
+// wire shape stays equivalent while values still pass through key-name
+// redaction and value-pattern scrubbing.
+//
+// Types with custom JSON/text marshalling (time.Time, json.RawMessage owners,
+// etc.) are passed through unchanged — rewriting them would corrupt their
+// wire encoding. []byte is likewise passed through (JSON base64). Anything
+// unrecognized passes through, keeping the scrubber fail-open.
+func scrubReflect(value any, depth int, seen map[uintptr]struct{}, opts scrubOptions) any {
+	if depth >= maxScrubDepth {
+		return redactedValue
+	}
+	if value == nil {
+		return value
+	}
+	// Custom marshallers own their encoding — leave them alone.
+	if _, ok := value.(json.Marshaler); ok {
+		return value
+	}
+	if _, ok := value.(encoding.TextMarshaler); ok {
+		return value
+	}
+
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if rv.IsNil() {
+			return value
+		}
+		return scrubValue(rv.Elem().Interface(), depth+1, seen, opts)
+
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return value
+		}
+		ptr := rv.Pointer()
+		if ptr != 0 {
+			if _, ok := seen[ptr]; ok {
+				return redactedValue // cycle guard
+			}
+			seen[ptr] = struct{}{}
+			defer delete(seen, ptr)
+		}
+		out := make(map[string]any, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			k := iter.Key().String()
+			if isSensitiveKey(k) {
+				out[k] = redactedValue
+				continue
+			}
+			out[k] = scrubValue(iter.Value().Interface(), depth+1, seen, opts)
+		}
+		return out
+
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return value // []byte — JSON base64, not free text
+		}
+		if rv.Kind() == reflect.Slice {
+			ptr := rv.Pointer()
+			if ptr != 0 {
+				if _, ok := seen[ptr]; ok {
+					return redactedValue // cycle guard
+				}
+				seen[ptr] = struct{}{}
+				defer delete(seen, ptr)
+			}
+		}
+		out := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out[i] = scrubValue(rv.Index(i).Interface(), depth+1, seen, opts)
+		}
+		return out
+
+	case reflect.Struct:
+		rt := rv.Type()
+		out := make(map[string]any, rt.NumField())
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			if f.PkgPath != "" {
+				continue // unexported
+			}
+			name := f.Name
+			if tag, ok := f.Tag.Lookup("json"); ok {
+				tagName, _, _ := strings.Cut(tag, ",")
+				if tagName == "-" {
+					continue
+				}
+				if tagName != "" {
+					name = tagName
+				}
+			}
+			if isSensitiveKey(name) {
+				out[name] = redactedValue
+				continue
+			}
+			out[name] = scrubValue(rv.Field(i).Interface(), depth+1, seen, opts)
+		}
+		if len(out) == 0 {
+			// No exported fields (e.g. an opaque internal type) — nothing to
+			// scrub, keep the original so its encoding is untouched.
+			return value
+		}
+		return out
 
 	default:
 		// Non-string primitive or unrecognized type — pass through unchanged.
@@ -392,9 +527,42 @@ func scrubPayload(payload any, opts scrubOptions) any {
 		}
 		return SpanBatch{Spans: items}
 
+	case DBQueryBatch:
+		// DB driver error strings routinely embed literal column values —
+		// e.g. Postgres `Key (email)=(user@example.com) already exists` or
+		// MySQL `Duplicate entry '4111111111111111' for key ...` — so the
+		// error message MUST go through the value scrubber. NormalizedQuery
+		// is literal-stripped by NormalizeSQL upstream but is scrubbed again
+		// here defensively.
+		if len(p.Queries) == 0 {
+			return payload
+		}
+		items := make([]DBQueryItem, len(p.Queries))
+		copy(items, p.Queries)
+		for i := range items {
+			items[i].ErrorMessage = scrubString(items[i].ErrorMessage, opts)
+			items[i].NormalizedQuery = scrubString(items[i].NormalizedQuery, opts)
+		}
+		return DBQueryBatch{Queries: items}
+
+	case HeartbeatPayload:
+		// Message is free text (typically jobErr.Error() from the cron
+		// integration) and can carry whatever the job's error embedded.
+		cp := p
+		cp.Message = scrubString(cp.Message, opts)
+		return cp
+
+	case *HeartbeatPayload:
+		if p == nil {
+			return payload
+		}
+		cp := *p
+		cp.Message = scrubString(cp.Message, opts)
+		return &cp
+
 	default:
-		// DBQueryBatch, HeartbeatPayload, and anything else carry no
-		// caller-controlled free-form maps — pass through untouched.
+		// Anything else carries no caller-controlled free-form maps — pass
+		// through untouched.
 		return payload
 	}
 }

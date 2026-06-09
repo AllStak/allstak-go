@@ -144,7 +144,7 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 		if err != nil {
 			lastErr = fmt.Errorf("allstak: http post %s: %w", path, err)
 			if t.debug {
-				fmt.Fprintf(stderrWriter, "[allstak] transport attempt %d failed: %v\n", attempt+1, err)
+				fmt.Fprintf(debugWriter(), "[allstak] transport attempt %d failed: %v\n", attempt+1, err)
 			}
 			continue
 		}
@@ -178,7 +178,7 @@ func (t *httpTransport) send(ctx context.Context, path string, payload any) erro
 
 		lastErr = fmt.Errorf("allstak: ingest %s returned %d", path, resp.StatusCode)
 		if t.debug {
-			fmt.Fprintf(stderrWriter, "[allstak] transport attempt %d got %d: %s\n", attempt+1, resp.StatusCode, truncate(string(respBody), 200))
+			fmt.Fprintf(debugWriter(), "[allstak] transport attempt %d got %d: %s\n", attempt+1, resp.StatusCode, truncate(string(respBody), 200))
 		}
 	}
 
@@ -278,5 +278,26 @@ func truncate(s string, n int) string {
 
 // stderrWriter is indirected so tests can capture debug output if needed.
 // It's a package-level var instead of a constructor argument because debug
-// output is inherently a side channel.
-var stderrWriter io.Writer = io.Discard
+// output is inherently a side channel. It is an atomic.Value because a Debug
+// client may be constructed (flipping the writer to os.Stderr) while another
+// client's worker is concurrently writing debug output — a plain interface
+// var would be a data race on the writer header. Access only through
+// debugWriter / setDebugWriter.
+var stderrWriter atomic.Value // io.Writer
+
+// debugWriter returns the current debug output destination. Defaults to
+// io.Discard until a Debug client installs os.Stderr.
+func debugWriter() io.Writer {
+	if w, ok := stderrWriter.Load().(io.Writer); ok && w != nil {
+		return w
+	}
+	return io.Discard
+}
+
+// setDebugWriter atomically installs w as the debug output destination.
+// A nil w is ignored (atomic.Value cannot store nil).
+func setDebugWriter(w io.Writer) {
+	if w != nil {
+		stderrWriter.Store(w)
+	}
+}

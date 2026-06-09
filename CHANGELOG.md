@@ -6,6 +6,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **HTTPS enforcement on the ingest host.** The effective ingest host (default
+  or `ALLSTAK_HOST` override) is now validated at init: `https://` is always
+  allowed, `http://` only for loopback hosts (`localhost`, `127.0.0.1`, `::1`,
+  `0.0.0.0`, `*.localhost`). Any other plaintext host is rejected — it would
+  ship the API key and all telemetry in cleartext. New `Config.AllowInsecureHost`
+  (or `ALLSTAK_ALLOW_INSECURE_HOST=1`) is the escape hatch for trusted internal
+  networks and emits a loud one-time stderr warning. The new `Init(cfg)`
+  constructor returns the validation error; `New` stays non-failing and
+  degrades to a loud, disabled no-op client instead.
+- **DB error strings and heartbeat messages now pass the PII scrubber.**
+  `DBQueryItem.ErrorMessage` (driver errors such as Postgres
+  `Key (email)=(user@example.com) already exists` or MySQL
+  `Duplicate entry '4111…1111'`), `NormalizedQuery` (defensively), and
+  `HeartbeatPayload.Message` are value-scrubbed on the wire path; previously
+  they passed through untouched.
+- **Scrubber type coverage.** The value scrubber now also handles `[]string`,
+  typed maps with string keys, typed slices/arrays, structs (exported fields,
+  honoring `json` tags, with key-name redaction on field names), pointers, and
+  `error` values via a bounded reflection fallback. Types with custom
+  JSON/text marshalling (e.g. `time.Time`) and `[]byte` pass through unchanged.
+- **Hardened on-disk state dirs (spool + session state).** State directories
+  are created `0700` (pre-existing looser dirs are tightened), symlinked dirs
+  and dirs owned by another user are refused (fail-open: persistence degrades
+  to in-memory), the session-state file is no longer read through a symlink,
+  session-state temp files use random `O_EXCL` names instead of a predictable
+  `.tmp` suffix, and the world-tmp fallback paths embed the uid
+  (`allstak-spool-<uid>`, `allstak-session-state-<uid>`). Session state now
+  prefers `os.UserCacheDir()` over `os.TempDir()`.
+- **`git describe` release-detection fallback is now gated.** New
+  `Config.DisableGitDetection` disables the exec fallback entirely, and it is
+  skipped automatically inside containers (`/.dockerenv`,
+  `/run/.containerenv`, `KUBERNETES_SERVICE_HOST`). The exec-free
+  build-info detection path is unchanged.
+
+### Fixed
+
+- **Close/send race that could crash the host.** A goroutine could pass the
+  `closed` fast-path check in a `Capture*` call, be descheduled past `Close`'s
+  flush grace window, and send on an already-closed channel — panicking inside
+  the host application. Capture enqueues now hold a read-lock across the
+  closed-check and the channel send while `Close` takes the write lock before
+  closing the channels, with a defensive `recover()` as a second layer.
+  Verified by a 120-iteration × 200-goroutine stress test under `go test -race`.
+- **Missing panic guards.** Worker goroutines (single + batch), the runtime
+  release-registration goroutine, session crash-recovery at init, every public
+  `Capture*` entry point, and `SendHeartbeat` (panic converted to a returned
+  error) are now `recover()`-protected so an internal bug can never take down
+  the host process.
+- **Data race on the debug writer.** The package-level debug output writer is
+  now an `atomic.Value`; constructing a `Debug` client while another client's
+  worker writes debug output was a data race on the `io.Writer` interface var.
+- **Integration modules are now publishable/consumable.** The nested modules
+  (`integrations/allstakgin`, `allstakecho`, `allstakgorm`, `allstakzap`,
+  `allstaklogrus`) previously required `allstak-go v0.0.0` with a relative
+  `replace` directive, which Go ignores in non-main modules — `go get` of any
+  published integration tag could not resolve. Each now requires the real
+  `github.com/AllStak/allstak-go v0.4.2` with no `replace`; local development
+  resolves the working tree through a `go.work` workspace (git-ignored per
+  repo convention).
+
+### Added
+
+- `Init(cfg Config) (*Client, error)` — like `New` but surfaces configuration
+  validation errors (currently the insecure-host rejection) instead of
+  degrading silently.
+- `Config.AllowInsecureHost`, `Config.DisableGitDetection`, and the
+  `ALLSTAK_ALLOW_INSECURE_HOST` environment variable.
+
 ## [0.4.2] — 2026-06-06
 
 ### Fixed

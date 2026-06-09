@@ -33,6 +33,33 @@ var defaultClient atomic.Pointer[Client]
 // return the already-installed client.
 var initOnce sync.Once
 
+// Init constructs a Client with the default HTTP transport, like New, but
+// surfaces configuration validation errors instead of degrading silently.
+// Today the only validation is transport security: a non-loopback http://
+// ingest host (via ALLSTAK_HOST) is rejected with a descriptive error unless
+// Config.AllowInsecureHost or ALLSTAK_ALLOW_INSECURE_HOST is set, because a
+// plaintext host would ship the API key and all telemetry in cleartext.
+//
+//	client, err := allstak.Init(allstak.Config{APIKey: key})
+//	if err != nil {
+//	    log.Fatal(err) // misconfiguration — fail fast at startup
+//	}
+//	defer client.Close(context.Background())
+//
+// On error no client is constructed (no goroutines, no network); the caller
+// decides whether to abort startup or continue without telemetry. New wraps
+// Init and converts the error into a loud stderr message + a disabled no-op
+// client for fail-open callers.
+func Init(cfg Config) (*Client, error) {
+	cfg = cfg.applyDefaults()
+	host := resolveHost()
+	if err := validateIngestHost(host, resolveAllowInsecureHost(cfg.AllowInsecureHost)); err != nil {
+		return nil, err
+	}
+	transport := newHTTPTransport(host, cfg.APIKey, cfg.RequestTimeout, cfg.MaxRetries, cfg.Debug, cfg.scrubOptions())
+	return newWithTransport(cfg, host, transport), nil
+}
+
 // InitFromEnv constructs a Client purely from ALLSTAK_* environment variables,
 // installs it as the package default (so allstak.Go / allstak.HTTPClient /
 // allstak.CaptureException work with zero wiring), and returns it. It is the

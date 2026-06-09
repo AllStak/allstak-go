@@ -100,7 +100,10 @@ type spool struct {
 // resolveSpoolDir picks the spool directory. Explicit config wins; otherwise
 // os.UserCacheDir() (XDG_CACHE_HOME / ~/Library/Caches / %LocalAppData%) with a
 // fallback to os.TempDir() for sandboxed runtimes where UserCacheDir fails. The
-// returned path is NOT yet created — newSpool does that and decides writability.
+// world-tmp fallback embeds the uid (allstak-spool-<uid>) so the path is unique
+// per user and a predictable shared-tmp name can't be squatted by another
+// account. The returned path is NOT yet created — newSpool does that and
+// decides writability.
 func resolveSpoolDir(configured string) string {
 	if s := strings.TrimSpace(configured); s != "" {
 		return s
@@ -108,7 +111,7 @@ func resolveSpoolDir(configured string) string {
 	if base, err := os.UserCacheDir(); err == nil && base != "" {
 		return filepath.Join(base, spoolDirName)
 	}
-	return filepath.Join(os.TempDir(), spoolDirName)
+	return filepath.Join(os.TempDir(), spoolDirName+uidSuffix())
 }
 
 // newSpool constructs an enabled spool rooted at dir, creating the directory if
@@ -129,8 +132,11 @@ func newSpool(dir string, maxEntries int, maxBytes int64, maxAge time.Duration, 
 		maxAge = defaultSpoolMaxAge
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		debugf("spool disabled: mkdir %s: %v", dir, err)
+	// Hardened creation: 0700, refuse symlinks, refuse dirs owned by another
+	// user, tighten pre-existing looser modes. Fail-open — a refused dir just
+	// disables persistence.
+	if err := ensureSecureDir(dir); err != nil {
+		debugf("spool disabled: %v", err)
 		return nil
 	}
 	// Probe writability with a temp file rather than trusting MkdirAll, which

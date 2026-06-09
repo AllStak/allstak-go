@@ -55,6 +55,16 @@ type Client struct {
 	closeOnce sync.Once
 	closed    atomic.Bool
 
+	// sendMu guards the enqueue→channel-send window against Close. Every
+	// capture path takes the read lock and re-checks `closed` before sending;
+	// Close sets `closed` and takes the write lock BEFORE closing the
+	// channels. This removes the TOCTOU between the lock-free closed.Load()
+	// fast path and close(chan) — a sender that passed the fast path either
+	// completes its send before Close acquires the write lock, or observes
+	// closed==true under the read lock and bails. Without this a descheduled
+	// sender could panic with "send on closed channel" and crash the host.
+	sendMu sync.RWMutex
+
 	// Counters exposed via Stats() for observability/tests.
 	captured          atomic.Int64
 	sent              atomic.Int64
@@ -76,15 +86,32 @@ type ingestTransport interface {
 // empty the client is in no-op mode: capture APIs accept input but nothing
 // is sent. This is intentional so libraries that wire AllStak in can be
 // safely imported without configuration.
+//
+// New never fails: if the resolved ingest host is rejected by the security
+// validation (a non-loopback http:// host without AllowInsecureHost — see
+// Init), New logs a loud error to stderr and returns a DISABLED no-op client
+// instead of shipping the API key and telemetry in cleartext. Use Init when
+// you want the validation error surfaced.
 func New(cfg Config) *Client {
+	c, err := Init(cfg)
+	if err == nil {
+		return c
+	}
+	// Fail-open, never crash the host: loud message + inert no-op client.
+	fmt.Fprintf(os.Stderr, "[allstak] %v — SDK disabled (no-op)\n", err)
+	off := false
+	cfg.APIKey = "" // no-op mode: capture APIs accept input, nothing is sent
+	cfg.EnableOfflineQueue = &off
+	cfg.EnableAutoSessionTracking = &off
+	cfg.AutoRegisterRelease = &off
 	cfg = cfg.applyDefaults()
-	host := resolveHost()
-	transport := newHTTPTransport(host, cfg.APIKey, cfg.RequestTimeout, cfg.MaxRetries, cfg.Debug, cfg.scrubOptions())
-	return newWithTransport(cfg, host, transport)
+	return newWithTransport(cfg, resolveHost(), TransportFunc(func(context.Context, string, any) error { return nil }))
 }
 
 // NewWithTransport lets advanced users (and tests) inject a custom
-// transport. Most applications should use New.
+// transport. Most applications should use New. Because the injected
+// transport owns delivery, the ingest-host security validation that New/Init
+// perform does not apply here.
 func NewWithTransport(cfg Config, t TransportFunc) *Client {
 	cfg = cfg.applyDefaults()
 	host := resolveHost()
@@ -101,7 +128,7 @@ func (f TransportFunc) send(ctx context.Context, path string, payload any) error
 
 func newWithTransport(cfg Config, host string, transport ingestTransport) *Client {
 	if cfg.Debug {
-		stderrWriter = os.Stderr
+		setDebugWriter(os.Stderr)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -199,6 +226,7 @@ func (c *Client) registerRuntimeRelease() {
 		"message":     "Registered automatically by AllStak Go SDK at runtime",
 	}
 	go func() {
+		defer func() { _ = recover() }() // never let release registration crash the host
 		ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RequestTimeout)
 		defer cancel()
 		_ = c.transport.send(ctx, pathReleases, payload)
@@ -294,6 +322,63 @@ func mergeReleaseTags(callerMeta map[string]any, tags map[string]string) map[str
 
 // ── Send paths (public capture API) ───────────────────────────────────────
 
+// guardCapture is the deferred belt-and-suspenders panic guard installed at
+// every public capture entry point. The SDK's prime directive is to NEVER
+// crash the host application: even if a bug slips past the lock-based
+// close/send synchronization (or enrichment code panics on a pathological
+// payload), the panic is swallowed here and the event is counted as dropped.
+func (c *Client) guardCapture() {
+	if r := recover(); r != nil {
+		c.dropped.Add(1)
+		c.debugf("capture panic suppressed (event dropped): %v", r)
+	}
+}
+
+// enqueue sends item to ch with drop-oldest ring semantics, synchronized
+// against Close:
+//
+//   - the read lock is held across the closed re-check AND the channel send,
+//     so Close (which sets closed and then takes the write lock before
+//     closing the channels) can never close a channel while a send is in
+//     flight;
+//   - a deferred recover() is kept as a last line of defense — a send on a
+//     closed channel (impossible by construction) would be swallowed and
+//     counted as a drop instead of crashing the host.
+//
+// It is a free generic function (not a method) because Go does not support
+// type parameters on methods.
+func enqueue[T any](c *Client, ch chan *T, item *T) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.dropped.Add(1)
+			c.debugf("enqueue panic suppressed (event dropped): %v", r)
+		}
+	}()
+
+	c.sendMu.RLock()
+	defer c.sendMu.RUnlock()
+	if c.closed.Load() {
+		c.dropped.Add(1)
+		return
+	}
+
+	select {
+	case ch <- item:
+	default:
+		// Drop oldest and enqueue — ring-buffer semantics.
+		select {
+		case <-ch:
+			c.dropped.Add(1)
+		default:
+		}
+		select {
+		case ch <- item:
+		default:
+			c.dropped.Add(1)
+		}
+	}
+}
+
 // CaptureError enqueues an error payload. Safe to call from any goroutine.
 // Returns immediately; the actual ingest happens asynchronously.
 //
@@ -301,6 +386,7 @@ func mergeReleaseTags(callerMeta map[string]any, tags map[string]string) map[str
 // This preserves the most-recent failure which is usually the most useful
 // for debugging.
 func (c *Client) CaptureError(p ErrorPayload) {
+	defer c.guardCapture()
 	if c.closed.Load() {
 		return
 	}
@@ -350,25 +436,12 @@ func (c *Client) CaptureError(p ErrorPayload) {
 	}
 	p = *event
 
-	select {
-	case c.errs <- &p:
-	default:
-		// Drop oldest and enqueue — ring-buffer semantics.
-		select {
-		case <-c.errs:
-			c.dropped.Add(1)
-		default:
-		}
-		select {
-		case c.errs <- &p:
-		default:
-			c.dropped.Add(1)
-		}
-	}
+	enqueue(c, c.errs, &p)
 }
 
 // CaptureLog enqueues a structured log event.
 func (c *Client) CaptureLog(p LogPayload) {
+	defer c.guardCapture()
 	if c.closed.Load() {
 		return
 	}
@@ -381,24 +454,12 @@ func (c *Client) CaptureLog(p LogPayload) {
 	}
 	p.Metadata = mergeReleaseTags(p.Metadata, c.cfg.ReleaseTags())
 
-	select {
-	case c.logs <- &p:
-	default:
-		select {
-		case <-c.logs:
-			c.dropped.Add(1)
-		default:
-		}
-		select {
-		case c.logs <- &p:
-		default:
-			c.dropped.Add(1)
-		}
-	}
+	enqueue(c, c.logs, &p)
 }
 
 // CaptureHTTPRequest enqueues an inbound or outbound HTTP event.
 func (c *Client) CaptureHTTPRequest(p HTTPRequestItem) {
+	defer c.guardCapture()
 	if c.closed.Load() {
 		return
 	}
@@ -414,24 +475,12 @@ func (c *Client) CaptureHTTPRequest(p HTTPRequestItem) {
 	}
 	p.Metadata = mergeReleaseTags(p.Metadata, c.cfg.ReleaseTags())
 
-	select {
-	case c.requests <- &p:
-	default:
-		select {
-		case <-c.requests:
-			c.dropped.Add(1)
-		default:
-		}
-		select {
-		case c.requests <- &p:
-		default:
-			c.dropped.Add(1)
-		}
-	}
+	enqueue(c, c.requests, &p)
 }
 
 // CaptureDBQuery enqueues a database query event.
 func (c *Client) CaptureDBQuery(p DBQueryItem) {
+	defer c.guardCapture()
 	if c.closed.Load() {
 		return
 	}
@@ -446,24 +495,12 @@ func (c *Client) CaptureDBQuery(p DBQueryItem) {
 		p.TimestampMillis = time.Now().UnixMilli()
 	}
 
-	select {
-	case c.dbq <- &p:
-	default:
-		select {
-		case <-c.dbq:
-			c.dropped.Add(1)
-		default:
-		}
-		select {
-		case c.dbq <- &p:
-		default:
-			c.dropped.Add(1)
-		}
-	}
+	enqueue(c, c.dbq, &p)
 }
 
 // CaptureSpan enqueues a tracing span for batched ingest.
 func (c *Client) CaptureSpan(p SpanItem) {
+	defer c.guardCapture()
 	if c.closed.Load() {
 		return
 	}
@@ -475,27 +512,21 @@ func (c *Client) CaptureSpan(p SpanItem) {
 		p.Service = c.cfg.ServiceName
 	}
 
-	select {
-	case c.spans <- &p:
-	default:
-		select {
-		case <-c.spans:
-			c.dropped.Add(1)
-		default:
-		}
-		select {
-		case c.spans <- &p:
-		default:
-			c.dropped.Add(1)
-		}
-	}
+	enqueue(c, c.spans, &p)
 }
 
 // SendHeartbeat reports a cron/job completion synchronously. Unlike the
 // queued capture methods this blocks until the backend responds (or the
 // context passed to the parent call is cancelled) because the caller
 // usually wants to know whether the ping was accepted.
-func (c *Client) SendHeartbeat(ctx context.Context, p HeartbeatPayload) error {
+func (c *Client) SendHeartbeat(ctx context.Context, p HeartbeatPayload) (err error) {
+	// Public API boundary guard: convert any internal panic into an error
+	// instead of crashing the host.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("allstak: heartbeat panic suppressed: %v", r)
+		}
+	}()
 	if c.closed.Load() {
 		return errors.New("allstak: client closed")
 	}
@@ -543,6 +574,14 @@ func (c *Client) Flush(ctx context.Context) error {
 func (c *Client) Close(ctx context.Context) error {
 	var firstErr error
 	c.closeOnce.Do(func() {
+		// Order matters for the close/send race:
+		//  1. Set `closed` so new captures bail at the fast path.
+		//  2. Flush so already-queued events are delivered.
+		//  3. Take the WRITE lock — this waits for every in-flight enqueue
+		//     (each holds the read lock across its closed-check + send) to
+		//     finish, and any enqueue that starts afterwards observes
+		//     closed==true under the read lock and returns without sending.
+		//  4. Only then close the channels. No goroutine can be inside a send.
 		c.closed.Store(true)
 		if err := c.Flush(ctx); err != nil {
 			firstErr = err
@@ -551,12 +590,14 @@ func (c *Client) Close(ctx context.Context) error {
 		// short timeout, fail-open — must not block shutdown or surface errors.
 		c.endSession()
 		c.cancel()
+		c.sendMu.Lock()
 		// Close channels so workers can exit cleanly.
 		close(c.errs)
 		close(c.logs)
 		close(c.requests)
 		close(c.dbq)
 		close(c.spans)
+		c.sendMu.Unlock()
 		c.wg.Wait()
 		c.debugf("client closed: sent=%d dropped=%d failed=%d", c.sent.Load(), c.dropped.Load(), c.failed.Load())
 	})
@@ -602,5 +643,5 @@ func (c *Client) debugf(format string, args ...any) {
 	if !c.cfg.Debug {
 		return
 	}
-	fmt.Fprintf(stderrWriter, "[allstak] "+format+"\n", args...)
+	fmt.Fprintf(debugWriter(), "[allstak] "+format+"\n", args...)
 }
