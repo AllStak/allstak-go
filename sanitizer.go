@@ -101,6 +101,20 @@ var (
 	ssnRe         = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
 	emailRe       = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
 	ipv4Re        = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b`)
+
+	// kvSecretRe matches key=value / key: value secret pairs embedded in free
+	// text (breadcrumb messages, log lines, error strings). The backend scrubs
+	// these too, but the client-side wire guarantee must not depend on it —
+	// and the pattern must match at position 0 of a string (a leading-anchor
+	// gap let "password=..." at string start reach the wire in the sibling
+	// SDKs, found live by the sdk-validation harness). Always-on.
+	kvSecretRe = regexp.MustCompile(`(?i)(password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth(?:orization)?|credentials?|private[_-]?key|client[_-]?secret|otp)(\s*[=:]\s*)[^\s&\"',;]+`)
+
+	// ibanRe matches IBANs in free text (ISO 13616: 2 uppercase letters, 2
+	// check digits, 11-30 alphanumeric BBAN). Always-on — the primary
+	// deployment market (Saudi banking/government) treats IBANs as directly
+	// identifying financial data.
+	ibanRe = regexp.MustCompile(`\b[A-Z]{2}\d{2}[A-Za-z0-9]{11,30}\b`)
 )
 
 // scrubOptions controls the value-pattern layer. The key-name denylist is
@@ -188,6 +202,8 @@ func scrubString(s string, opts scrubOptions) string {
 		return m
 	})
 	out = ssnRe.ReplaceAllString(out, redactedValue)
+	out = kvSecretRe.ReplaceAllString(out, "${1}${2}"+redactedValue)
+	out = ibanRe.ReplaceAllString(out, redactedValue)
 
 	// (B) Gated by sendDefaultPii — email + IPv4.
 	if !opts.sendDefaultPii {

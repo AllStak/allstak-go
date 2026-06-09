@@ -175,3 +175,42 @@ func TestScrubValuePointerToStruct(t *testing.T) {
 		t.Fatalf("token field not redacted: %v", got["token"])
 	}
 }
+
+// ── Free-text key=value secrets + IBAN (sdk-validation regressions) ─────────
+
+func TestKvSecretScrubbedAtStringStart(t *testing.T) {
+	opts := scrubOptions{scrubValues: true}
+	out := scrubString("password=hunter2 rest", opts)
+	if strings.Contains(out, "hunter2") {
+		t.Fatalf("password value leaked: %q", out)
+	}
+	if !strings.Contains(out, "password=") {
+		t.Fatalf("key should be kept for debuggability: %q", out)
+	}
+	if out2 := scrubString("note client_secret=s3cr3t&next=1", opts); strings.Contains(out2, "s3cr3t") {
+		t.Fatalf("client_secret leaked: %q", out2)
+	}
+	if out3 := scrubString("otp: 123456", opts); strings.Contains(out3, "123456") {
+		t.Fatalf("otp leaked: %q", out3)
+	}
+}
+
+func TestIbanScrubbedAlwaysEvenWithPiiOptIn(t *testing.T) {
+	out := scrubString("transfer to SA4420000001234567891234 failed", scrubOptions{scrubValues: true, sendDefaultPii: true})
+	if strings.Contains(out, "SA4420000001234567891234") {
+		t.Fatalf("IBAN leaked with pii opt-in: %q", out)
+	}
+	out2 := scrubString("iban DE89370400440532013000 ok", scrubOptions{scrubValues: true})
+	if strings.Contains(out2, "DE89370400440532013000") {
+		t.Fatalf("IBAN leaked: %q", out2)
+	}
+}
+
+func TestKvIbanNoOverscrub(t *testing.T) {
+	opts := scrubOptions{scrubValues: true}
+	for _, in := range []string{"order id 1234 for user", "auth flow started", "SA44 is a region code"} {
+		if got := scrubString(in, opts); got != in {
+			t.Fatalf("over-scrubbed %q -> %q", in, got)
+		}
+	}
+}
